@@ -19,12 +19,12 @@
     [is_nullable]        BIT           NOT NULL ,
     [num_rows]           BIGINT        NULL ,
     [num_unique_values]  BIGINT        NULL ,
-    [unique_percent] AS CAST([num_unique_values] AS FLOAT) / [num_rows] ,
+    [unique_ratio] AS CAST((CAST([num_unique_values] AS DECIMAL(25,5)) / [num_rows]) AS DECIMAL(25,5)) ,
     [num_nulls]          BIGINT        NULL ,
-    [nulls_percent] AS CAST([num_nulls] AS FLOAT) / [num_rows] ,
+    [nulls_ratio] AS CAST((CAST([num_nulls] AS DECIMAL(25,5)) / [num_rows]) AS DECIMAL(25,5)) ,
     [max_length]         INT           NULL
   )
-  
+
   INSERT INTO #table_column_profile (
     [object_id] ,
     [column_id] ,
@@ -179,9 +179,9 @@
          [is_nullable] ,
          [num_rows] ,
          [num_unique_values] ,
-         [unique_percent] , 
+         [unique_ratio] , 
          [num_nulls] , 
-         [nulls_percent] ,
+         [nulls_ratio] ,
          [max_length]
   FROM #table_column_profile;
   
