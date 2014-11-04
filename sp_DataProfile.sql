@@ -1,9 +1,45 @@
+USE [master]
+GO
+
+IF OBJECT_ID('dbo.sp_DataProfile') IS NOT NULL 
+  DROP PROCEDURE dbo.sp_DataProfile;
+GO
+
+CREATE PROCEDURE dbo.sp_DataProfile
+   @TableName NVARCHAR(500) ,
+   @DatabaseName NVARCHAR(128) = NULL
+AS
+BEGIN
+
+  PRINT @TableName
+
+  SET NOCOUNT ON;
+  SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+  DECLARE @SQLString NVARCHAR(4000);
+  DECLARE @Schema NVARCHAR(100);
+  DECLARE @DatabaseID INT;
+  DECLARE @SchemaPosition INT;
   
-  DECLARE @tablename NVARCHAR(500),
-          @SQLString NVARCHAR(4000);
+  IF @DatabaseName IS NULL
+   SET @DatabaseName = DB_NAME();
+
+  IF @Schema IS NULL 
+    SET @Schema = 'dbo';
   
-  SET @tablename = N'Users';
-  
+  SET @SchemaPosition = CHARINDEX('.', @TableName)
+  IF @SchemaPosition > 0
+  BEGIN
+    SET @Schema = SUBSTRING(@TableName, 1, @SchemaPosition - 1)
+    SET @TableName = SUBSTRING(@TableName, @SchemaPosition + 1, LEN(@TableName) - @SchemaPosition + 1)
+  END
+
+  SELECT  @DatabaseID = database_id
+  FROM    sys.databases
+  WHERE   [name] = @DatabaseName
+  AND     user_access_desc = 'MULTI_USER'
+  AND     state_desc = 'ONLINE';
+        
   IF OBJECT_ID ('tempdb..#table_column_profile') IS NOT NULL
     DROP TABLE #table_column_profile;
   
@@ -12,8 +48,9 @@
     [column_id]          INT           NOT NULL , 
     [name]               NVARCHAR(500) NOT NULL , 
     [type]               NVARCHAR(100) NOT NULL ,
+    [user_type]          NVARCHAR(100) NOT NULL ,
     [collation]          NVARCHAR(100) NULL ,
-    [max_len]            INTEGER       NULL ,
+    [length]             INTEGER       NULL ,
     [precision]          INTEGER       NULL ,
     [scale]              INTEGER       NULL ,
     [is_nullable]        BIT           NOT NULL ,
@@ -25,73 +62,102 @@
     [max_length]         INT           NULL
   )
 
+  SET @SQLString = N'
+    SELECT t.object_id ,
+           c.column_id ,
+           c.name ,
+           sys.name,
+           typ.name ,
+           c.collation_name ,
+           c.max_length ,
+           c.precision ,
+           c.scale ,
+           c.is_nullable
+    FROM   ' + QUOTENAME(@DatabaseName) + '.sys.tables  t
+    JOIN   ' + QUOTENAME(@DatabaseName) + '.sys.columns c   ON  t.object_id = c.object_id
+    JOIN   ' + QUOTENAME(@DatabaseName) + '.sys.types   typ ON  c.system_type_id = typ.system_type_id
+                                                            AND c.user_type_id = typ.user_type_id
+    JOIN   ' + QUOTENAME(@DatabaseName) + '.sys.types   sys ON  typ.system_type_id = sys.system_type_id
+                                                            AND sys.user_type_id = sys.system_type_id
+    JOIN   ' + QUOTENAME(@DatabaseName) + '.sys.schemas s   ON  t.schema_id = s.schema_id
+                                                            AND s.name = ''' + @Schema + '''
+    WHERE  t.name = ''' + @TableName + '''
+    ORDER BY c.column_id;'
+
+PRINT @SQLString;
+
+  IF @SQLString IS NULL 
+    RAISERROR('@SQLString is null', 16, 1);
+
+  RAISERROR (N'Inserting data into #table_column_profile', 0, 1) WITH NOWAIT;
+
   INSERT INTO #table_column_profile (
     [object_id] ,
     [column_id] ,
     [name] ,
     [type] ,
+    [user_type] ,
     [collation] ,
-    [max_len] ,
+    [length] ,
     [precision] ,
     [scale] ,
     [is_nullable]
   ) 
-  SELECT t.object_id ,
-         c.column_id ,
-         c.name ,
-         typ.name ,
-         c.collation_name ,
-         c.max_length ,
-         c.precision ,
-         c.scale ,
-         c.is_nullable
-  FROM   sys.tables t
-  JOIN   sys.columns c ON  t.object_id = c.object_id
-  JOIN   sys.types   typ ON c.system_type_id = typ.system_type_id
-                         AND c.user_type_id = typ.user_type_id
-  WHERE  t.name = 'Users' -- @tablename
-  ORDER BY c.column_id
-  ;
-  
-  SET @SQLString = 
-    'UPDATE #table_column_profile ' + 
-    'SET num_rows = cnt ' +
-    'FROM (' +
-    '  SELECT COUNT(*) cnt ' +
-    '  FROM ' + QUOTENAME(@tablename) + ') tablecount';
-  
   EXEC sp_executesql @SQLString;
   
-  -- Determine unique values
+  RAISERROR (N'Updating data in #table_column_profile for table row counts', 0, 1) WITH NOWAIT;
 
-  DECLARE 
-     @min_column_id INT,
-     @max_column_id INT,
-     @cur_column_id INT = 0;
+  SET @SQLString = N'
+    UPDATE #table_column_profile  
+    SET num_rows = cnt 
+    FROM (
+      SELECT COUNT(*) cnt 
+      FROM ' + QUOTENAME(@Schema) + '.' + QUOTENAME(@TableName) + ') tablecount
+      WHERE  type IN (''uniqueidentifier'', ''date'', ''time'', ''datetime2'', ''datetimeoffset'', ''tinyint'', ''smallint'', ''int'', ''smalldatetime'', ''real'', ''money'', ''datetime'', ''float'', ''sql_variant'', ''bit'', ''decimal'', ''numeric'', ''smallmoney'' ,''bigint'', ''hierarchyid'', ''geometry'', ''geography'', ''varbinary'', ''varchar'', ''binary'', ''char'', ''timestamp'', ''nvarchar'', ''nchar'') ;'
+
+PRINT @SQLString;
+
+  IF @SQLString IS NULL 
+    RAISERROR('@SQLString is null', 16, 1);
   
-  SELECT @min_column_id = MIN([column_id]), @max_column_id = MAX([column_id]) FROM #table_column_profile;
+  EXEC sp_executesql @SQLString;
+    
+  -- Determine unique values for each column with a valid type.
+  DECLARE @uniq_col_name NVARCHAR(500) ,
+          @uniq_col_id  INTEGER;
   
-  WHILE (@cur_column_id < @max_column_id)
+  DECLARE uniq_cur CURSOR
+    LOCAL STATIC FORWARD_ONLY READ_ONLY FOR
+      SELECT p.name,
+             p.column_id
+      FROM   #table_column_profile p
+      WHERE  type IN ('uniqueidentifier', 'date', 'time', 'datetime2', 'datetimeoffset', 'tinyint', 'smallint', 'int', 'smalldatetime', 'real', 'money', 'datetime', 'float', 'sql_variant', 'bit', 'decimal', 'numeric', 'smallmoney' ,'bigint', 'hierarchyid', 'geometry', 'geography', 'varbinary', 'varchar', 'binary', 'char', 'timestamp', 'nvarchar', 'nchar') ;
+
+  OPEN uniq_cur;
+  
+  FETCH NEXT FROM uniq_cur INTO @uniq_col_name, @uniq_col_id;
+  
+  WHILE @@FETCH_STATUS = 0
   BEGIN
-    SET @cur_column_id += 1;
   
-    SELECT @SQLString = 
-      N'UPDATE #table_column_profile ' +
-       'SET num_unique_values = val ' + 
-       'FROM (' +
-       'SELECT COUNT(DISTINCT ' + QUOTENAME(p.name) + ') val FROM ' + QUOTENAME(@tablename) + ') uniq ' +
-       'WHERE column_id = ' + CAST(p.column_id AS NVARCHAR(10))
-    FROM #table_column_profile p
-    WHERE [column_id] = @cur_column_id; 
+    RAISERROR (N'Determine unique values for each column with a valid type.', 0, 1) WITH NOWAIT;
+
+    SELECT @SQLString = N'
+      UPDATE #table_column_profile 
+      SET num_unique_values = val 
+      FROM (
+      SELECT COUNT(DISTINCT ' + QUOTENAME(@uniq_col_name) + ') val FROM ' + QUOTENAME(@Schema) + '.' + QUOTENAME(@TableName) + ') uniq 
+      WHERE column_id = ' + CAST(@uniq_col_id AS NVARCHAR(10)) 
   
+    IF @SQLString IS NULL 
+      RAISERROR('@SQLString is null', 16, 1);
+
     EXECUTE sp_executesql @SQLString;
-  
-    -- PRINT @sql_update_unique_val;
-         
+
+    FETCH NEXT FROM uniq_cur INTO @uniq_col_name, @uniq_col_id;
   END
-  
-  -- Determine null values
-   
+    
+  -- Determine null values for each column   
   DECLARE @null_col_name NVARCHAR(500) ,
           @null_col_num  INTEGER;
 
@@ -109,20 +175,25 @@
   WHILE @@FETCH_STATUS = 0
   BEGIN
 
+    RAISERROR (N'Updating data in #table_column_profile for column null row counts', 0, 1) WITH NOWAIT;
+
     SELECT @SQLString = 
       N'UPDATE #table_column_profile ' +
        'SET num_nulls = val ' + 
        'FROM (' +
-       '  SELECT SUM(CASE WHEN ' + QUOTENAME(@null_col_name) + ' IS NULL THEN 1 ELSE 0 END) val ' +
-       '  FROM ' + QUOTENAME(@tablename) + ' ' +
+       '  SELECT COUNT(' + QUOTENAME(@null_col_name) + ') val ' +
+       '  FROM ' + QUOTENAME(@Schema) + '.' + QUOTENAME(@TableName) + ' ' +
        '  WHERE ' + QUOTENAME(@null_col_name) + ' IS NULL ' +
        ') uniq ' +
        'WHERE column_id = ' + CAST(@null_col_num AS NVARCHAR(10))
+
+    IF @SQLString IS NULL 
+      RAISERROR('@SQLString is null', 16, 1);
+
+PRINT @SQLString
   
     EXECUTE sp_executesql @SQLString;
-  
-    -- PRINT @SQLString;
-  
+    
     FETCH NEXT FROM null_cur INTO @null_col_name, @null_col_num;
   END
   
@@ -139,7 +210,7 @@
       SELECT p.name,
              p.column_id
       FROM   #table_column_profile p
-      WHERE  p.type NOT IN ('binary','bit','date','datetime','datetime2','datetimeoffset','geography','geometry','image','ntext','smalldatetime','time','timestamp','uniqueidentifier','varbinary');
+      WHERE  p.type IN ('varchar', 'char', 'nvarchar', 'nchar');
 
   OPEN len_cur;
   
@@ -148,32 +219,40 @@
   WHILE @@FETCH_STATUS = 0
   BEGIN
     
+    RAISERROR (N'Updating data in #table_column_profile for column max length', 0, 1) WITH NOWAIT;
+
     SELECT @SQLString = 
       N'UPDATE #table_column_profile ' +
        'SET max_length = val ' + 
        'FROM (' +
        '  SELECT MAX(LEN(' + QUOTENAME(@len_col_name) + ')) val ' +
-       '  FROM ' + QUOTENAME(@tablename) + ' ' +
+       '  FROM ' + QUOTENAME(@Schema) + '.' + QUOTENAME(@TableName) + ' ' +
        ') uniq ' +
        'WHERE column_id = ' + CAST(@len_col_num AS NVARCHAR(10))
 
+    IF @SQLString IS NULL 
+      RAISERROR('@SQLString is null', 16, 1);
+
     EXECUTE sp_executesql @SQLString;
-  
-    -- PRINT @SQLString;
   
     FETCH NEXT FROM len_cur INTO @len_col_name, @len_col_num;
   END
   
   CLOSE len_cur;
-  DEALLOCATE len_cur;
-  
+  DEALLOCATE len_cur;  
     
   SELECT [object_id] ,
          [column_id] ,
          [name] ,
+         [user_type] ,
          [type] ,
          [collation] ,
-         [max_len] ,
+         [length] = 
+           CASE 
+             WHEN [length] = -1 AND [type] = 'xml' THEN NULL
+             WHEN [length] = -1 THEN 'max'
+             ELSE CAST([length] AS VARCHAR(50)) 
+           END,
          [precision] ,
          [scale] ,
          [is_nullable] ,
@@ -186,4 +265,12 @@
   FROM #table_column_profile;
   
   DROP TABLE #table_column_profile;
-  
+
+  SET NOCOUNT OFF;
+END
+
+GO
+
+-- WHAT ABOUT USER DEFINED DATA TYPES?
+
+
