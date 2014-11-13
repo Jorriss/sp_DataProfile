@@ -7,7 +7,7 @@ USE [master]
   
   CREATE PROCEDURE dbo.sp_DataProfile
      @TableName NVARCHAR(500) ,
-     @Mode TINYINT = 0 , /* 0 = Table Overview, 1 = Column Statistics */
+     @Mode TINYINT = 0 , /* 0 = Table Overview, 1 = Table Detail, 2 = Column Statistics */
      @DatabaseName NVARCHAR(128) = NULL ,
      @SampleValue INT = NULL ,
      @SampleType NVARCHAR(50) = 'PERCENT'
@@ -30,19 +30,56 @@ USE [master]
     DECLARE @IsSample BIT = 0;
     DECLARE @TableSample NVARCHAR(100) = '';
     DECLARE @FromTableName NVARCHAR(100) = '';
+    DECLARE @SQLServerVersion NVARCHAR(100) = '';
+    DECLARE @SQLCompatLevelMaster INT;
+    DECLARE @SQLCompatLevelDB INT;
+    DECLARE @SQLCompatLevelDBOut INT;
+    DECLARE @SQLCompatLevel INT;
   
     BEGIN TRY
   
-    IF @DatabaseName IS NULL
-       SET @DatabaseName = DB_NAME();
+      /* Get that SQL Server Version son! 2005 or older up in here! */
+      SELECT @SQLServerVersion = CAST(SERVERPROPERTY('ProductVersion') AS NVARCHAR(128));
+
+      IF (SELECT LEFT(@SQLServerVersion, CHARINDEX('.', @SQLServerVersion, 0) -1 )) <= 8
+      BEGIN
+        SET @msg = N'I''m sorry Dave. I can''t run on your version of SQL Server. I require a SQL Server 2005 and higher. The version of this instance is: ' + @SQLServerVersion + '. I promise I won''t open the airlock.';
+        RAISERROR(@msg, 16, 1);
+      END
+
+      IF @DatabaseName IS NULL
+        SET @DatabaseName = DB_NAME();
+
+      /* Get Compat Level. We're going to use this later to determine if we can do the wierd stuff. */
+      SELECT @SQLCompatLevelMaster = compatibility_level FROM sys.databases WHERE name = 'master';
+
+      SET @SQLString = N'
+        SELECT @SQLCompatLevelDBOut = compatibility_level 
+        FROM sys.databases WHERE name = ''' + @DatabaseName + ''';'
       
+      IF @SQLString IS NULL 
+        RAISERROR('@SQLString is null', 16, 1);
+      
+      EXEC sp_executesql @SQLString, N'@SQLCompatLevelDBOut INT OUTPUT', @SQLCompatLevelDBOut = @SQLCompatLevelDB OUTPUT;
+      
+      IF @SQLCompatLevelMaster < @SQLCompatLevelDB 
+        SET @SQLCompatLevel = @SQLCompatLevelMaster;
+      ELSE
+        SET @SQLCompatLevel = @SQLCompatLevelDB;
+      
+      IF @SQLCompatLevel < 110
+      BEGIN 
+        SET @Msg = 'Your compatibility level of ' + CAST(@SQLCompatLevel AS NVARCHAR(10)) + ' is a bit too low. I can''t perform median calculations for compatibility levels lower than 110. If this is unacceptable to you feel free to write the median calculation yourself. I accept pull requests. ;)';
+        RAISERROR(@msg, 0, 1);
+      END
+
       SET @Schema = PARSENAME(@TableName, 2);
       SET @TableName = PARSENAME(@TableName, 1);
     
       IF @Schema IS NULL 
         SET @Schema = 'dbo';
 
-      IF @Mode NOT IN (0, 1) 
+      IF @Mode NOT IN (0, 1, 2) 
       BEGIN
         SET @msg = 'Mode values shoul only be 0 or 1. 0 = Table Overview. 1 = Column Statistics, ';
         RAISERROR(@msg, 1, 1);
@@ -162,7 +199,7 @@ USE [master]
       
     SELECT TOP 1 @RowCount = num_rows FROM #table_column_profile;
     
-    IF @Mode = 0 
+    IF @Mode = 1 /* Table Detail */
     BEGIN 
         
       -- Determine unique values for each column with a valid type.
@@ -291,7 +328,7 @@ USE [master]
   
     END
 
-    IF @Mode = 1
+    IF @Mode = 2 /* Column Statistics */
     BEGIN
 
       -- Determine Column Statistica
@@ -337,18 +374,18 @@ USE [master]
        IF @stats_col_type != 'bit'
         EXECUTE sp_executesql @SQLString;
 
+        /* Update mean, standard deviation */
         DECLARE @col_name NVARCHAR(100) = QUOTENAME(@stats_col_name);
         IF @stats_col_type = 'int'
           SET @col_name = 'CAST(' + QUOTENAME(@stats_col_name) + ' AS BIGINT)';
 
-        -- Update Mean, Std_Dev
         SELECT @SQLString = 
           N'UPDATE #table_column_profile 
-            SET mean = max_val ,
-                std_dev = min_val 
+            SET mean = mean_val ,
+                std_dev = std_dev_val
             FROM (
-              SELECT CAST(AVG(' + @col_name + ') AS NVARCHAR(100)) max_val  ,
-                     CAST(CAST(STDEV(' + QUOTENAME(@stats_col_name) + ') AS NUMERIC(18,4)) AS NVARCHAR(100)) min_val  
+              SELECT mean_val = CAST(AVG(' + @col_name + ') AS NVARCHAR(100)) ,
+                     std_dev_val = CAST(CAST(STDEV(' + QUOTENAME(@stats_col_name) + ') AS NUMERIC(18,4)) AS NVARCHAR(100)) 
               FROM ' + @FromTableName + ' 
             ) stats ' +
            'WHERE column_id = ' + CAST(@stats_col_num AS NVARCHAR(10))
@@ -358,9 +395,32 @@ USE [master]
        IF @SQLString IS NULL
           RAISERROR('@SQLString is null', 16, 1);
 
-       IF @stats_col_type NOT IN ('bit', 'date', 'datetime2', 'datetime', 'datetimeoffset', 'smalldatetime', 'time')
+       IF @stats_col_type IN ('bigint', 'decimal', 'int', 'money', 'numeric', 'smallint', 'smallmoney', 'tinyint', 'float', 'real')
         EXECUTE sp_executesql @SQLString;
-      
+       
+       /* Update median */
+       IF @SQLCompatLevel >= 110
+       BEGIN
+        
+         SELECT @SQLString = 
+           N'UPDATE #table_column_profile 
+             SET median = median_val
+             FROM (
+               SELECT median_val = PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY ' + @stats_col_name + ') OVER ()
+               FROM ' + @FromTableName + ' 
+             ) stats ' +
+            'WHERE column_id = ' + CAST(@stats_col_num AS NVARCHAR(10))
+          
+    PRINT @SQLString;
+
+         IF @SQLString IS NULL
+            RAISERROR('@SQLString is null', 16, 1);
+
+         IF @stats_col_type IN ('bigint', 'decimal', 'int', 'money', 'numeric', 'smallint', 'smallmoney', 'tinyint', 'float', 'real')
+           EXECUTE sp_executesql @SQLString;
+        
+        END /* End Median Update */
+
         FETCH NEXT FROM stats_cur INTO @stats_col_name, @stats_col_num, @stats_col_type;
       END
       
@@ -378,7 +438,7 @@ USE [master]
     
     -- Table detail output
 
-    IF @Mode = 0
+    IF @Mode = 1
     BEGIN
 
       SELECT [column_id] ,
@@ -404,28 +464,41 @@ USE [master]
 
     END
 
-    IF @Mode = 1
+    IF @Mode = 2
     BEGIN
-      SELECT [column_id] ,
-             [name] ,
-             [user_type] ,
-             [type] ,
-             [collation] ,
-             [length] = 
-               CASE 
-                 WHEN [length] = -1 AND [type] = 'xml' THEN NULL
-                 WHEN [length] = -1 THEN 'max'
-                 ELSE CAST([length] AS VARCHAR(50)) 
-               END,
-             [precision] ,
-             [scale] ,
-             [is_nullable] ,
-             [min_value] ,
-             [max_value] ,
-             [mean] ,
-             [median] ,
-             [std_dev]
-      FROM #table_column_profile;
+
+      SET @SQLString = N'
+        SELECT [column_id] ,
+               [name] ,
+               [user_type] ,
+               [type] ,
+               [collation] ,
+               [length] = 
+                 CASE 
+                   WHEN [length] = -1 AND [type] = ''xml'' THEN NULL
+                   WHEN [length] = -1 THEN ''max''
+                   ELSE CAST([length] AS VARCHAR(50)) 
+                 END,
+               [precision] ,
+               [scale] ,
+               [is_nullable] ,
+               [min_value] ,
+               [max_value] ,
+               [mean] ,'
+
+    IF @SQLCompatLevel >= 110
+      SET @SQLString = @SQLString + N'
+               [median] ,'
+
+    SET @SQLString = @SQLString + N'             
+               [std_dev]
+        FROM #table_column_profile;'
+
+      IF @SQLString IS NULL 
+        RAISERROR('@SQLString is null', 16, 1);
+
+      EXEC sp_executesql @SQLString;
+
     END
 
     DROP TABLE #table_column_profile;
