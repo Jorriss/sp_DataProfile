@@ -7,7 +7,7 @@ GO
 
 CREATE PROCEDURE dbo.sp_DataProfile
    @TableName NVARCHAR(500) ,
-   @Mode TINYINT = 0 , /* 0 = Table Overview, 1 = Table Detail, 2 = Column Statistics, 3 = Candidate Key Check */
+   @Mode TINYINT = 0 , /* 0 = Table Overview, 1 = Table Detail, 2 = Column Statistics, 3 = Candidate Key Check, 4 - Column Value Distribution*/
    @ColumnList NVARCHAR(4000) = NULL ,
    @DatabaseName NVARCHAR(128) = NULL ,
    @SampleValue INT = NULL ,
@@ -30,7 +30,9 @@ BEGIN
   DECLARE @RowCount BIGINT;
   DECLARE @IsSample BIT = 0;
   DECLARE @TableSample NVARCHAR(100) = '';
-  DECLARE @FromTableName NVARCHAR(100) = '';
+  DECLARE @FromTableName NVARCHAR(100) = ''
+  DECLARE @ColumnListString NVARCHAR(4000);
+  DECLARE @ColumnNameFirst NVARCHAR(4000);
   DECLARE @SQLServerVersion NVARCHAR(100) = '';
   DECLARE @SQLCompatLevelMaster INT;
   DECLARE @SQLCompatLevelDB INT;
@@ -80,9 +82,9 @@ BEGIN
     IF @Schema IS NULL 
       SET @Schema = 'dbo';
 
-    IF @Mode NOT IN (0, 1, 2, 3) 
+    IF @Mode NOT IN (0, 1, 2, 3, 4) 
     BEGIN
-      SET @msg = 'Mode values should only be 0, 1, 2 or 3. 0 = Table Overview, 1 = Table Detail, 2 = Column Statistics, 3 = Candidate Key Check, ';
+      SET @msg = 'Mode values should only be 0, 1, 2, 3 or 4. 0 = Table Overview, 1 = Table Detail, 2 = Column Statistics, 3 = Candidate Key Check, 4 = Column Value Distribution';
       RAISERROR(@msg, 1, 1);
       RETURN;
     END 
@@ -109,7 +111,7 @@ BEGIN
 
     SET @FromTableName = QUOTENAME(@Schema) + '.' + QUOTENAME(@TableName) + @TableSample;
 
-    If DB_NAME() <> @DatabaseName THEN
+    If DB_NAME() <> @DatabaseName
       SET @FromTableName = QUOTENAME(@DatabaseName) + '.' + @FromTableName;
 
     SELECT  @DatabaseID = database_id
@@ -119,7 +121,6 @@ BEGIN
     AND     state_desc = 'ONLINE';
           
     /* Format ColumnList  */
-    DECLARE @ColumnListString NVARCHAR(4000);
     SET @ColumnList = RTRIM(LTRIM(@ColumnList));
     IF RIGHT(@ColumnList, 1) = ','
       SET @ColumnList = LEFT(@ColumnList, LEN(@ColumnList) - 1);
@@ -203,7 +204,7 @@ BEGIN
     SET @SQLString = N'
       UPDATE #table_column_profile  
       SET num_rows = cnt 
-      FROM (SELECT COUNT(*) cnt 
+      FROM (SELECT COUNT_BIG(*) cnt 
             FROM ' + @FromTableName + ') tablecount ;'
     
     IF @SQLString IS NULL 
@@ -216,8 +217,7 @@ BEGIN
     SELECT TOP 1 @RowCount = num_rows FROM #table_column_profile;
     
     IF @Mode = 1 /* Table Detail */
-    BEGIN 
-        
+    BEGIN         
       -- Determine unique values for each column with a valid type.
       DECLARE @uniq_col_name NVARCHAR(500) ,
               @uniq_col_id  INTEGER;
@@ -437,17 +437,46 @@ BEGIN
   
     END /* 2 - Column Statistics */
 
-    /* Table output */
-    SELECT [object_id] = OBJECT_ID(QUOTENAME(@Schema) + '.' + QUOTENAME(@TableName)) ,
-           [schema_name] = @Schema ,
-           [table_name] = @TableName ,
-           [row_count] = @RowCount ,
-           [is_sample] = CASE @IsSample WHEN 1 THEN 'True' ELSE 'False' END;
+    IF @Mode = 4 /* 4 - Column Value Distribution */
+  BEGIN
+
+      DECLARE @RowCountDistinct BIGINT;
+
+      CREATE TABLE #table_distinct_count (
+          [column_count] BIGINT NULL);
+
+      /* Only process the first column identified */
+      IF CHARINDEX(',', @ColumnList) > 0
+        SET @ColumnNameFirst = LEFT(@ColumnList, CHARINDEX(',', @ColumnList) - 1)
+      ELSE 
+        SET @ColumnNameFirst = RTRIM(LTRIM(@ColumnList))
+      
+      SELECT @SQLString = N'
+        INSERT INTO #table_distinct_count (column_count)
+        SELECT COUNT(DISTINCT ' + QUOTENAME(@ColumnNameFirst) + ') val 
+        FROM ' + @FromTableName + ' 
+      ';
+
+PRINT @SQLString;
+
+      IF @SQLString IS NULL 
+        RAISERROR('@SQLString is null', 16, 1);
+  
+      EXEC sp_executesql @SQLString;
+
+    END /* 4 - Column Value Distribution */
 
     /* Table schema output */  
     IF @Mode = 0
     BEGIN
   
+      /* Table output */
+      SELECT [object_id] = OBJECT_ID(QUOTENAME(@Schema) + '.' + QUOTENAME(@TableName)) ,
+             [schema_name] = @Schema ,
+             [table_name] = @TableName ,
+             [row_count] = @RowCount ,
+             [is_sample] = CASE @IsSample WHEN 1 THEN 'True' ELSE 'False' END;
+
       SELECT   [column_id] ,
                [name] ,
                [user_type] ,
@@ -470,6 +499,13 @@ BEGIN
     IF @Mode = 1
     BEGIN
   
+      /* Table output */
+      SELECT [object_id] = OBJECT_ID(QUOTENAME(@Schema) + '.' + QUOTENAME(@TableName)) ,
+             [schema_name] = @Schema ,
+             [table_name] = @TableName ,
+             [row_count] = @RowCount ,
+             [is_sample] = CASE @IsSample WHEN 1 THEN 'True' ELSE 'False' END;
+
       SELECT   [column_id] ,
                [name] ,
                [user_type] ,
@@ -497,6 +533,13 @@ BEGIN
     IF @Mode = 2
     BEGIN
   
+      /* Table output */
+      SELECT [object_id] = OBJECT_ID(QUOTENAME(@Schema) + '.' + QUOTENAME(@TableName)) ,
+             [schema_name] = @Schema ,
+             [table_name] = @TableName ,
+             [row_count] = @RowCount ,
+             [is_sample] = CASE @IsSample WHEN 1 THEN 'True' ELSE 'False' END;
+
       SET @SQLString = N'
           SELECT [column_id] ,
                  [name] ,
@@ -531,10 +574,17 @@ BEGIN
   
     END /* Mode 2: Column statistics output */
   
-    /* Column statistics output */
+    /* Candidate Key Check */
     IF @Mode = 3
     BEGIN
  
+      /* Table output */
+      SELECT [object_id] = OBJECT_ID(QUOTENAME(@Schema) + '.' + QUOTENAME(@TableName)) ,
+             [schema_name] = @Schema ,
+             [table_name] = @TableName ,
+             [row_count] = @RowCount ,
+             [is_sample] = CASE @IsSample WHEN 1 THEN 'True' ELSE 'False' END;
+
       SELECT @SQLString = N'
         SELECT    COUNT(*) AS row_count ,
                   ' + @ColumnList + ' 
@@ -548,7 +598,38 @@ BEGIN
   
       EXEC sp_executesql @SQLString;
 
-    END /* 3 - Column statistics output */
+    END /* 3 - Candidate Key Check */
+
+    /* 4 - Column Value Distribution */
+    IF @Mode = 4 
+  BEGIN
+
+      /* Table output */
+      SELECT [object_id] = OBJECT_ID(QUOTENAME(@Schema) + '.' + QUOTENAME(@TableName)) ,
+             [schema_name] = @Schema ,
+             [table_name] = @TableName ,
+             [row_count] = @RowCount ,
+             [column_name] = @ColumnNameFirst ,
+             [distinct_row_count] = (SELECT column_count FROM #table_distinct_count) ,
+             [is_sample] = CASE @IsSample WHEN 1 THEN 'True' ELSE 'False' END ;
+
+      SELECT @SQLString = N'
+        SELECT ' + @ColumnNameFirst + ' ,
+                COUNT(*) ,
+               CAST((CAST(COUNT(*)AS DECIMAL(9,4)) / ' + CAST(@RowCount AS NVARCHAR(25)) + ') * 100 AS DECIMAL(9,4))
+        FROM   ' + @FromTableName + '
+        GROUP BY ' + @ColumnNameFirst + '
+        ORDER BY 2 DESC, 1
+      ';
+
+PRINT @SQLString;
+
+      IF @SQLString IS NULL 
+        RAISERROR('@SQLString is null', 16, 1);
+  
+      EXEC sp_executesql @SQLString;
+
+    END /* 4 - Column Value Distribution */
 
     DROP TABLE #table_column_profile;
   
