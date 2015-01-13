@@ -7,7 +7,7 @@ GO
 
 CREATE PROCEDURE dbo.sp_DataProfile
    @TableName NVARCHAR(500) ,
-   @Mode TINYINT = 0 , /* 0 = Table Overview, 1 = Table Detail, 2 = Column Statistics, 3 = Candidate Key Check, 4 - Column Value Distribution*/
+   @Mode TINYINT = 0 , /* 0 = Table Overview, 1 = Table Detail, 2 = Column Statistics, 3 = Candidate Key Check, 4 - Column Value Distribution */
    @ColumnList NVARCHAR(4000) = NULL ,
    @DatabaseName NVARCHAR(128) = NULL ,
    @SampleValue INT = NULL ,
@@ -30,7 +30,7 @@ BEGIN
   DECLARE @RowCount BIGINT;
   DECLARE @IsSample BIT = 0;
   DECLARE @TableSample NVARCHAR(100) = '';
-  DECLARE @FromTableName NVARCHAR(100) = ''
+  DECLARE @FromTableName NVARCHAR(100) = '';
   DECLARE @ColumnListString NVARCHAR(4000);
   DECLARE @ColumnNameFirst NVARCHAR(4000);
   DECLARE @SQLServerVersion NVARCHAR(100) = '';
@@ -142,9 +142,9 @@ BEGIN
       [is_nullable]        BIT           NOT NULL ,
       [num_rows]           BIGINT        NULL ,
       [num_unique_values]  BIGINT        NULL ,
-      [unique_ratio] AS CAST((CAST([num_unique_values] AS DECIMAL(25,5)) / [num_rows]) AS DECIMAL(25,5)) ,
+      [unique_ratio] AS CAST((CAST([num_unique_values] AS DECIMAL(25,5)) / ISNULL(NULLIF([num_rows], 0), 1)) AS DECIMAL(25,5)) ,
       [num_nulls]          BIGINT        NULL ,
-      [nulls_ratio] AS CAST((CAST([num_nulls] AS DECIMAL(25,5)) / [num_rows]) AS DECIMAL(25,5)) ,
+      [nulls_ratio] AS CAST((CAST([num_nulls] AS DECIMAL(25,5)) / ISNULL(NULLIF([num_rows], 0), 1)) AS DECIMAL(25,5)) ,
       [max_length]         INT           NULL ,
       [min_value]          NVARCHAR(100) NULL ,
       [max_value]          NVARCHAR(100) NULL ,
@@ -415,7 +415,7 @@ BEGIN
             UPDATE #table_column_profile 
             SET median = median_val
             FROM (
-              SELECT median_val = PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY ' + @stats_col_name + ') OVER ()
+              SELECT DISTINCT median_val = PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY ' + @stats_col_name + ') OVER ()
               FROM ' + @FromTableName + ' 
             ) stats 
             WHERE column_id = ' + CAST(@stats_col_num AS NVARCHAR(10))
@@ -456,8 +456,6 @@ BEGIN
         SELECT COUNT(DISTINCT ' + QUOTENAME(@ColumnNameFirst) + ') val 
         FROM ' + @FromTableName + ' 
       ';
-
-PRINT @SQLString;
 
       IF @SQLString IS NULL 
         RAISERROR('@SQLString is null', 16, 1);
@@ -602,7 +600,7 @@ PRINT @SQLString;
 
     /* 4 - Column Value Distribution */
     IF @Mode = 4 
-  BEGIN
+    BEGIN
 
       /* Table output */
       SELECT [object_id] = OBJECT_ID(QUOTENAME(@Schema) + '.' + QUOTENAME(@TableName)) ,
@@ -621,8 +619,6 @@ PRINT @SQLString;
         GROUP BY ' + @ColumnNameFirst + '
         ORDER BY 2 DESC, 1
       ';
-
-PRINT @SQLString;
 
       IF @SQLString IS NULL 
         RAISERROR('@SQLString is null', 16, 1);
