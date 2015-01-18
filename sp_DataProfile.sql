@@ -133,7 +133,7 @@ BEGIN
       [object_id]          INT           NOT NULL ,
       [column_id]          INT           NOT NULL , 
       [name]               NVARCHAR(500) NOT NULL , 
-      [type]               NVARCHAR(100) NOT NULL ,
+      [system_type]        NVARCHAR(100) NOT NULL ,
       [user_type]          NVARCHAR(100) NOT NULL ,
       [collation]          NVARCHAR(100) NULL ,
       [length]             INTEGER       NULL ,
@@ -189,7 +189,7 @@ BEGIN
       [object_id] ,
       [column_id] ,
       [name] ,
-      [type] ,
+      [system_type] ,
       [user_type] ,
       [collation] ,
       [length] ,
@@ -228,7 +228,7 @@ BEGIN
           SELECT p.name,
                  p.column_id
           FROM   #table_column_profile p
-          WHERE  type IN ('uniqueidentifier', 'date', 'time', 'datetime2', 'datetimeoffset', 'tinyint', 'smallint', 'int', 'smalldatetime', 'real', 'money', 'datetime', 'float', 'sql_variant', 'bit', 'decimal', 'numeric', 'smallmoney' ,'bigint', 'hierarchyid', 'geometry', 'geography', 'varbinary', 'varchar', 'binary', 'char', 'timestamp', 'nvarchar', 'nchar') ;
+          WHERE  system_type IN ('uniqueidentifier', 'date', 'time', 'datetime2', 'datetimeoffset', 'tinyint', 'smallint', 'int', 'smalldatetime', 'real', 'money', 'datetime', 'float', 'sql_variant', 'bit', 'decimal', 'numeric', 'smallmoney' ,'bigint', 'hierarchyid', 'geometry', 'geography', 'varbinary', 'varchar', 'binary', 'char', 'timestamp', 'nvarchar', 'nchar') ;
     
       OPEN uniq_cur;
       
@@ -310,7 +310,7 @@ BEGIN
           SELECT p.name,
                  p.column_id
           FROM   #table_column_profile p
-          WHERE  p.type IN ('varchar', 'char', 'nvarchar', 'nchar');
+          WHERE  p.system_type IN ('varchar', 'char', 'nvarchar', 'nchar');
     
       OPEN len_cur;
       
@@ -370,9 +370,9 @@ BEGIN
       DECLARE stats_cur CURSOR LOCAL STATIC FORWARD_ONLY READ_ONLY FOR
       SELECT p.name,
              p.column_id,
-             p.type
+             p.system_type
       FROM   #table_column_profile p
-      WHERE  p.type IN ('bigint', 'bit', 'decimal', 'int', 'money', 'numeric', 'smallint', 'smallmoney', 'tinyint', 'float', 'real', 'date', 'datetime2', 'datetime', 'datetimeoffset', 'smalldatetime', 'time');
+      WHERE  p.system_type IN ('bigint', 'bit', 'decimal', 'int', 'money', 'numeric', 'smallint', 'smallmoney', 'tinyint', 'float', 'real', 'date', 'datetime2', 'datetime', 'datetimeoffset', 'smalldatetime', 'time');
     
       OPEN stats_cur;
       
@@ -493,10 +493,10 @@ BEGIN
       SELECT   [column_id] ,
                [name] ,
                [user_type] ,
-               [type] ,
+               [system_type] ,
                [length] = 
                  CASE 
-                   WHEN [length] = -1 AND [type] = 'xml' THEN NULL
+                   WHEN [length] = -1 AND [system_type] = 'xml' THEN NULL
                    WHEN [length] = -1 THEN 'max'
                    ELSE CAST([length] AS VARCHAR(50)) 
                  END,
@@ -522,10 +522,10 @@ BEGIN
       SELECT   [column_id] ,
                [name] ,
                [user_type] ,
-               [type] ,
+               [system_type] ,
                [length] = 
                  CASE 
-                   WHEN [length] = -1 AND [type] = 'xml' THEN NULL
+                   WHEN [length] = -1 AND [system_type] = 'xml' THEN NULL
                    WHEN [length] = -1 THEN 'max'
                    ELSE CAST([length] AS VARCHAR(50)) 
                  END,
@@ -557,10 +557,10 @@ BEGIN
           SELECT [column_id] ,
                  [name] ,
                  [user_type] ,
-                 [type] ,
+                 [system_type] ,
                  [length] = 
                    CASE 
-                     WHEN [length] = -1 AND [type] = ''xml'' THEN NULL
+                     WHEN [length] = -1 AND [system_type] = ''xml'' THEN NULL
                      WHEN [length] = -1 THEN ''max''
                      ELSE CAST([length] AS VARCHAR(50)) 
                    END,
