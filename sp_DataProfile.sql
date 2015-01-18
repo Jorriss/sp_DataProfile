@@ -145,6 +145,7 @@ BEGIN
       [unique_ratio] AS CAST((CAST([num_unique_values] AS DECIMAL(25,5)) / ISNULL(NULLIF([num_rows], 0), 1)) AS DECIMAL(25,5)) ,
       [num_nulls]          BIGINT        NULL ,
       [nulls_ratio] AS CAST((CAST([num_nulls] AS DECIMAL(25,5)) / ISNULL(NULLIF([num_rows], 0), 1)) AS DECIMAL(25,5)) ,
+      [min_length]         INT           NULL ,
       [max_length]         INT           NULL ,
       [min_value]          NVARCHAR(100) NULL ,
       [max_value]          NVARCHAR(100) NULL ,
@@ -327,13 +328,27 @@ BEGIN
            '  SELECT MAX(LEN(' + QUOTENAME(@len_col_name) + ')) val ' +
            '  FROM ' + @FromTableName + ' ' +
            ') uniq ' +
-           'WHERE column_id = ' + CAST(@len_col_num AS NVARCHAR(10))
+           'WHERE column_id = ' + CAST(@len_col_num AS NVARCHAR(10));
     
         IF @SQLString IS NULL 
           RAISERROR('@SQLString is null', 16, 1);
     
         EXECUTE sp_executesql @SQLString;
       
+        SELECT @SQLString = 
+          N'UPDATE #table_column_profile ' +
+           'SET min_length = val ' + 
+           'FROM (' +
+           '  SELECT MIN(LEN(' + QUOTENAME(@len_col_name) + ')) val ' +
+           '  FROM ' + @FromTableName + ' ' +
+           ') uniq ' +
+           'WHERE column_id = ' + CAST(@len_col_num AS NVARCHAR(10));
+    
+        IF @SQLString IS NULL 
+          RAISERROR('@SQLString is null', 16, 1);
+    
+        EXECUTE sp_executesql @SQLString;
+
         FETCH NEXT FROM len_cur INTO @len_col_name, @len_col_num;
       END
       
@@ -498,11 +513,11 @@ BEGIN
     BEGIN
   
       /* Table output */
-      SELECT [object_id] = OBJECT_ID(QUOTENAME(@Schema) + '.' + QUOTENAME(@TableName)) ,
-             [schema_name] = @Schema ,
-             [table_name] = @TableName ,
-             [row_count] = @RowCount ,
-             [is_sample] = CASE @IsSample WHEN 1 THEN 'True' ELSE 'False' END;
+      SELECT   [object_id] = OBJECT_ID(QUOTENAME(@Schema) + '.' + QUOTENAME(@TableName)) ,
+               [schema_name] = @Schema ,
+               [table_name] = @TableName ,
+               [row_count] = @RowCount ,
+               [is_sample] = CASE @IsSample WHEN 1 THEN 'True' ELSE 'False' END;
 
       SELECT   [column_id] ,
                [name] ,
@@ -521,6 +536,7 @@ BEGIN
                [unique_ratio] , 
                [num_nulls] , 
                [nulls_ratio] ,
+               [min_length] ,
                [max_length]
       FROM #table_column_profile;
   
