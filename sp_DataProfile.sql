@@ -502,7 +502,7 @@ BEGIN
                  END,
                [precision] ,
                [scale] ,
-               [is_nullable] 
+               [is_nullable] ,
                [collation] 
       FROM #table_column_profile;
   
