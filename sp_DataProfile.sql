@@ -7,7 +7,7 @@ GO
 
 CREATE PROCEDURE dbo.sp_DataProfile
    @TableName NVARCHAR(500) ,
-   @Mode TINYINT = 0 , /* 0 = Table Overview, 1 = Table Detail, 2 = Column Statistics, 3 = Candidate Key Check, 4 - Column Value Distribution */
+   @Mode TINYINT = 0 , /* 0 = Table Overview, 1 = Column Detail, 2 = Column Statistics, 3 = Candidate Key Check, 4 = Column Value Distribution */
    @ColumnList NVARCHAR(4000) = NULL ,
    @DatabaseName NVARCHAR(128) = NULL ,
    @SampleValue INT = NULL ,
@@ -479,7 +479,6 @@ BEGIN
                [name] ,
                [user_type] ,
                [type] ,
-               [collation] ,
                [length] = 
                  CASE 
                    WHEN [length] = -1 AND [type] = 'xml' THEN NULL
@@ -489,6 +488,7 @@ BEGIN
                [precision] ,
                [scale] ,
                [is_nullable] 
+               [collation] 
       FROM #table_column_profile;
   
     END /* Mode 0: Table schema output */
@@ -508,7 +508,6 @@ BEGIN
                [name] ,
                [user_type] ,
                [type] ,
-               [collation] ,
                [length] = 
                  CASE 
                    WHEN [length] = -1 AND [type] = 'xml' THEN NULL
@@ -543,7 +542,6 @@ BEGIN
                  [name] ,
                  [user_type] ,
                  [type] ,
-                 [collation] ,
                  [length] = 
                    CASE 
                      WHEN [length] = -1 AND [type] = ''xml'' THEN NULL
@@ -553,6 +551,7 @@ BEGIN
                  [precision] ,
                  [scale] ,
                  [is_nullable] ,
+                 [collation] ,
                  [min_value] ,
                  [max_value] ,
                  [mean] ,'
