@@ -629,7 +629,7 @@ BEGIN
       SELECT @SQLString = N'
         SELECT ' + @ColumnNameFirst + ' ,
                 COUNT(*) ,
-               CAST((CAST(COUNT(*)AS DECIMAL(9,4)) / ' + CAST(@RowCount AS NVARCHAR(25)) + ') * 100 AS DECIMAL(9,4))
+               CAST((CAST(COUNT(*)AS DECIMAL(18,4)) / ' + CAST(@RowCount AS NVARCHAR(25)) + ') * 100 AS DECIMAL(18,4))
         FROM   ' + @FromTableName + '
         GROUP BY ' + @ColumnNameFirst + '
         ORDER BY 2 DESC, 1
