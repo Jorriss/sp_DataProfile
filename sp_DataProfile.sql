@@ -10,6 +10,8 @@ CREATE PROCEDURE dbo.sp_DataProfile
    @Mode TINYINT = 0 , /* 0 = Table Overview, 1 = Column Detail, 2 = Column Statistics, 3 = Candidate Key Check, 4 = Column Value Distribution */
    @ColumnList NVARCHAR(4000) = NULL ,
    @DatabaseName NVARCHAR(128) = NULL ,
+   @ShowForeignKeys BIT = 0 ,
+   @ShowIndexes BIT = 0 ,
    @SampleValue INT = NULL ,
    @SampleType NVARCHAR(50) = 'PERCENT'
 AS
@@ -88,6 +90,14 @@ BEGIN
       RAISERROR(@msg, 1, 1);
       RETURN;
     END 
+
+    IF (@Mode IN (3, 4)) AND (@ColumnList IS NULL OR @ColumnList = '') 
+    BEGIN
+      
+      SET @msg = 'It looks like you didn''t provide a ColumnList. A ColumnList is required for the Candidate Key Check and the Column Value Distribution modes.';
+      RAISERROR(@msg, 1, 1);
+      RETURN;
+    END 
   
     IF @SampleType NOT IN ('ROWS', 'PERCENT') 
     BEGIN
@@ -132,7 +142,7 @@ BEGIN
     CREATE TABLE #table_column_profile (
       [object_id]          INT           NOT NULL ,
       [column_id]          INT           NOT NULL , 
-      [name]               NVARCHAR(500) NOT NULL , 
+      [name]               NVARCHAR(128) NOT NULL , 
       [system_type]        NVARCHAR(100) NOT NULL ,
       [user_type]          NVARCHAR(100) NOT NULL ,
       [collation]          NVARCHAR(100) NULL ,
@@ -152,8 +162,33 @@ BEGIN
       [mean]               NVARCHAR(100) NULL ,
       [median]             NVARCHAR(100) NULL ,
       [std_dev]            NVARCHAR(100) NULL
-    )
+    );
+
+    CREATE TABLE #table_relationship (
+     [relationship_type]         NVARCHAR(25)  NULL ,
+     [fk_name]                   NVARCHAR(128) NOT NULL ,
+     [parent_table]              NVARCHAR(128) NOT NULL ,
+     [parent_column_name]        NVARCHAR(128) NOT NULL ,
+     [parent_column_id]          INT           NULL ,
+     [referrenced_table]         NVARCHAR(128) NOT NULL ,
+     [referrenced_column_name]   NVARCHAR(128) NOT NULL ,
+     [referenced_column_id]      INT           NULL
+    );
   
+    CREATE TABLE #table_indexes (
+      [name]                 NVARCHAR(128)  NOT NULL ,
+      [index_id]             INT            NULL ,
+      [type_desc]            NVARCHAR(60)   NULL ,
+      [is_primary_key]       BIT            NULL ,
+      [is_unique]            BIT            NULL ,
+      [is_unique_constraint] BIT            NULL ,
+      [is_disabled]          BIT            NULL ,
+      [fill_factor]          TINYINT        NULL ,
+      [index_columns]        NVARCHAR(max)  NULL ,
+      [included_columns]     NVARCHAR(max)  NULL ,
+      [filter_definition]    NVARCHAR(max)
+    );
+
     SET @SQLString = N'
       SELECT t.object_id ,
              c.column_id ,
@@ -217,6 +252,126 @@ BEGIN
       
     SELECT TOP 1 @RowCount = num_rows FROM #table_column_profile;
     
+    IF @ShowForeignKeys = 1
+    BEGIN
+
+      SET @SQLString = N'
+        SELECT      relationship_type = ''Outgoing'',
+                    fk_name = fk.name ,
+                    parent_table = tp.name ,
+                    parent_column_name = cp.name , 
+                    parent_column_id = cp.column_id ,
+                    referrenced_table = tr.name ,
+                    referrenced_column_name = cr.name , 
+                    referenced_column_id = cr.column_id
+        FROM        ' + QUOTENAME(@DatabaseName) + '.sys.foreign_keys        fk
+        JOIN        ' + QUOTENAME(@DatabaseName) + '.sys.tables              tp  ON  fk.parent_object_id = tp.object_id
+        LEFT JOIN   ' + QUOTENAME(@DatabaseName) + '.sys.tables              tr  ON  fk.referenced_object_id = tr.object_id
+        JOIN        ' + QUOTENAME(@DatabaseName) + '.sys.foreign_key_columns fkc ON  fkc.constraint_object_id = fk.object_id
+        JOIN        ' + QUOTENAME(@DatabaseName) + '.sys.columns             cp  ON  fkc.parent_column_id = cp.column_id 
+                                                AND fkc.parent_object_id = cp.object_id
+        JOIN        ' + QUOTENAME(@DatabaseName) + '.sys.columns             cr  ON  fkc.referenced_column_id = cr.column_id 
+                                                AND fkc.referenced_object_id = cr.object_id
+        WHERE       tr.name = ''' + @TableName + '''
+        
+        UNION ALL
+        
+        SELECT      RelationshipType = ''Incoming'',
+                    FKName = fk.name ,
+                    ParentTable = tp.name ,
+                    ParentColumnName = cp.name , 
+                    ParentColumnID = cp.column_id ,
+                    ReferencedTable = tr.name ,
+                    ReferencedColumnName = cr.name , 
+                    ReferencedColumnID = cr.column_id
+        FROM        ' + QUOTENAME(@DatabaseName) + '.sys.foreign_keys        fk
+        JOIN        ' + QUOTENAME(@DatabaseName) + '.sys.tables              tp  ON fk.parent_object_id = tp.object_id
+        LEFT JOIN   ' + QUOTENAME(@DatabaseName) + '.sys.tables              tr  ON fk.referenced_object_id = tr.object_id
+        JOIN        ' + QUOTENAME(@DatabaseName) + '.sys.foreign_key_columns fkc ON fkc.constraint_object_id = fk.object_id
+        JOIN        ' + QUOTENAME(@DatabaseName) + '.sys.columns             cp  ON fkc.parent_column_id = cp.column_id AND fkc.parent_object_id = cp.object_id
+        JOIN        ' + QUOTENAME(@DatabaseName) + '.sys.columns             cr  ON fkc.referenced_column_id = cr.column_id AND fkc.referenced_object_id = cr.object_id
+        WHERE       tp.name = ''' + @TableName + ''''
+    
+      PRINT @SQLString;
+    
+      INSERT INTO #table_relationship (
+        [relationship_type] ,
+        [fk_name] ,
+        [parent_table] ,
+        [parent_column_name] ,
+        [parent_column_id] ,
+        [referrenced_table] ,
+        [referrenced_column_name] ,
+        [referenced_column_id]
+      )
+      EXEC sp_executesql @SQLString;
+
+      IF @SQLString IS NULL 
+        RAISERROR('@SQLString is null', 16, 1);
+    END
+
+    IF @ShowIndexes = 1
+    BEGIN
+
+      SET @SQLString = N'
+        SELECT     i.name , 
+                   i.index_id ,
+                   i.type_desc ,
+                   i.is_primary_key ,
+                   i.is_unique ,
+                   i.is_unique_constraint ,
+                   i.is_disabled ,
+                   i.fill_factor ,
+                   index_columns = 
+                    (SELECT STUFF(
+                      (SELECT '', '' +  c.name + CASE WHEN ic.is_descending_key = 1 THEN '' DESC'' ELSE '' ASC'' END 
+                       FROM   ' + QUOTENAME(@DatabaseName) + '.sys.index_columns ic
+                       JOIN   ' + QUOTENAME(@DatabaseName) + '.sys.columns       c   ON  ic.object_id = c.object_id
+                                                    AND ic.column_id = c.column_id
+                       WHERE  i.object_id = ic.object_id
+                       AND    i.index_id = ic.index_id
+                       AND    ic.is_included_column = 0
+                       ORDER BY ic.index_column_id
+                       FOR XML PATH (''''))
+                     , 1, 1, '''') ) ,
+                   included_columns = 
+                    (SELECT STUFF(
+                      (SELECT '', '' +  c.name 
+                      FROM   ' + QUOTENAME(@DatabaseName) + '.sys.index_columns ic
+                      JOIN   ' + QUOTENAME(@DatabaseName) + '.sys.columns       c   ON  ic.object_id = c.object_id
+                                                   AND ic.column_id = c.column_id
+                      WHERE  i.object_id = ic.object_id
+                      AND    i.index_id = ic.index_id
+                      AND    ic.is_included_column = 1
+                      ORDER BY ic.index_column_id
+                      FOR XML PATH (''''))
+                    , 1, 1, '''') ) ,
+                   i.filter_definition
+          FROM     ' + QUOTENAME(@DatabaseName) + '.sys.indexes       i
+          WHERE    i.object_id = OBJECT_ID(''' + @TableName + ''')
+          ORDER BY i.index_id'
+    
+      PRINT @SQLString;
+    
+      INSERT INTO #table_indexes (
+        [name] ,
+        [index_id] ,
+        [type_desc] ,
+        [is_primary_key] , 
+        [is_unique] ,
+        [is_unique_constraint] ,
+        [is_disabled] ,
+        [fill_factor] ,
+        [index_columns] ,
+        [included_columns] ,
+        [filter_definition]
+      )        
+      EXEC sp_executesql @SQLString;
+
+      IF @SQLString IS NULL 
+        RAISERROR('@SQLString is null', 16, 1);
+    END
+
     IF @Mode = 1 /* Table Detail */
     BEGIN         
       -- Determine unique values for each column with a valid type.
@@ -453,7 +608,7 @@ BEGIN
     END /* 2 - Column Statistics */
 
     IF @Mode = 4 /* 4 - Column Value Distribution */
-  BEGIN
+    BEGIN
 
       DECLARE @RowCountDistinct BIGINT;
 
@@ -505,7 +660,39 @@ BEGIN
                [is_nullable] ,
                [collation] 
       FROM #table_column_profile;
-  
+
+      IF @ShowForeignKeys = 1
+      BEGIN
+        SELECT    [relationship_type] ,
+                  [fk_name] ,
+                  [parent_table] ,
+                  [parent_column_name] ,
+                  [parent_column_id] ,
+                  [referrenced_table] ,
+                  [referrenced_column_name] ,
+                  [referenced_column_id]
+        FROM      #table_relationship
+        ORDER BY  relationship_type ,
+                  parent_table ,
+                  fk_name  
+      END
+
+      IF @ShowIndexes = 1
+      BEGIN
+        SELECT    [name] ,
+                  [index_id] ,
+                  [type_desc] ,
+                  [is_primary_key] , 
+                  [is_unique] ,
+                  [is_unique_constraint] ,
+                  [is_disabled] ,
+                  [fill_factor] ,
+                  [index_columns] ,
+                  [included_columns] ,
+                  [filter_definition]
+        FROM      #table_indexes
+        ORDER BY  index_id
+      END
     END /* Mode 0: Table schema output */
     
     /* Table detail output */  
@@ -539,7 +726,40 @@ BEGIN
                [min_length] ,
                [max_length]
       FROM #table_column_profile;
-  
+
+      IF @ShowForeignKeys = 1
+      BEGIN
+        SELECT    [relationship_type] ,
+                  [fk_name] ,
+                  [parent_table] ,
+                  [parent_column_name] ,
+                  [parent_column_id] ,
+                  [referrenced_table] ,
+                  [referrenced_column_name] ,
+                  [referenced_column_id]
+        FROM      #table_relationship
+        ORDER BY  relationship_type ,
+                  parent_table ,
+                  fk_name ;
+      END
+
+      IF @ShowIndexes = 1
+      BEGIN
+        SELECT    [name] ,
+                  [index_id] ,
+                  [type_desc] ,
+                  [is_primary_key] , 
+                  [is_unique] ,
+                  [is_unique_constraint] ,
+                  [is_disabled] ,
+                  [fill_factor] ,
+                  [index_columns] ,
+                  [included_columns] ,
+                  [filter_definition]
+        FROM      #table_indexes
+        ORDER BY  index_id ;
+      END
+             
     END /* Mode 1: Table detail output */
   
     /* Column statistics output */
@@ -584,7 +804,40 @@ BEGIN
         RAISERROR('@SQLString is null', 16, 1);
   
       EXEC sp_executesql @SQLString;
-  
+
+      IF @ShowForeignKeys = 1
+      BEGIN
+        SELECT    [relationship_type] ,
+                  [fk_name] ,
+                  [parent_table] ,
+                  [parent_column_name] ,
+                  [parent_column_id] ,
+                  [referrenced_table] ,
+                  [referrenced_column_name] ,
+                  [referenced_column_id]
+        FROM      #table_relationship
+        ORDER BY  relationship_type ,
+                  parent_table ,
+                  fk_name ;
+      END
+
+      IF @ShowIndexes = 1
+      BEGIN
+        SELECT    [name] ,
+                  [index_id] ,
+                  [type_desc] ,
+                  [is_primary_key] , 
+                  [is_unique] ,
+                  [is_unique_constraint] ,
+                  [is_disabled] ,
+                  [fill_factor] ,
+                  [index_columns] ,
+                  [included_columns] ,
+                  [filter_definition]
+        FROM      #table_indexes
+        ORDER BY  index_id ;
+      END
+
     END /* Mode 2: Column statistics output */
   
     /* Candidate Key Check */
@@ -611,6 +864,39 @@ BEGIN
   
       EXEC sp_executesql @SQLString;
 
+      IF @ShowForeignKeys = 1
+      BEGIN
+        SELECT    [relationship_type] ,
+                  [fk_name] ,
+                  [parent_table] ,
+                  [parent_column_name] ,
+                  [parent_column_id] ,
+                  [referrenced_table] ,
+                  [referrenced_column_name] ,
+                  [referenced_column_id]
+        FROM      #table_relationship
+        ORDER BY  relationship_type ,
+                  parent_table ,
+                  fk_name ;
+      END
+
+      IF @ShowIndexes = 1
+      BEGIN
+        SELECT    [name] ,
+                  [index_id] ,
+                  [type_desc] ,
+                  [is_primary_key] , 
+                  [is_unique] ,
+                  [is_unique_constraint] ,
+                  [is_disabled] ,
+                  [fill_factor] ,
+                  [index_columns] ,
+                  [included_columns] ,
+                  [filter_definition]
+        FROM      #table_indexes
+        ORDER BY  index_id ;
+      END
+
     END /* 3 - Candidate Key Check */
 
     /* 4 - Column Value Distribution */
@@ -628,8 +914,8 @@ BEGIN
 
       SELECT @SQLString = N'
         SELECT ' + @ColumnNameFirst + ' ,
-                COUNT(*) ,
-               CAST((CAST(COUNT(*)AS DECIMAL(18,4)) / ' + CAST(@RowCount AS NVARCHAR(25)) + ') * 100 AS DECIMAL(18,4))
+                Count = COUNT(*) ,
+                Percentage = CAST((CAST(COUNT(*)AS DECIMAL(18,4)) / ' + CAST(@RowCount AS NVARCHAR(25)) + ') * 100 AS DECIMAL(18,4))
         FROM   ' + @FromTableName + '
         GROUP BY ' + @ColumnNameFirst + '
         ORDER BY 2 DESC, 1
@@ -640,9 +926,44 @@ BEGIN
   
       EXEC sp_executesql @SQLString;
 
+      IF @ShowForeignKeys = 1
+      BEGIN
+        SELECT    [relationship_type] ,
+                  [fk_name] ,
+                  [parent_table] ,
+                  [parent_column_name] ,
+                  [parent_column_id] ,
+                  [referrenced_table] ,
+                  [referrenced_column_name] ,
+                  [referenced_column_id]
+        FROM      #table_relationship
+        ORDER BY  relationship_type ,
+                  parent_table ,
+                  fk_name ;
+      END
+
+      IF @ShowIndexes = 1
+      BEGIN
+        SELECT    [name] ,
+                  [index_id] ,
+                  [type_desc] ,
+                  [is_primary_key] , 
+                  [is_unique] ,
+                  [is_unique_constraint] ,
+                  [is_disabled] ,
+                  [fill_factor] ,
+                  [index_columns] ,
+                  [included_columns] ,
+                  [filter_definition]
+        FROM      #table_indexes
+        ORDER BY  index_id ;
+      END
+
     END /* 4 - Column Value Distribution */
 
     DROP TABLE #table_column_profile;
+    DROP TABLE #table_relationship;
+    DROP TABLE #table_indexes
   
     SET NOCOUNT OFF;
   
