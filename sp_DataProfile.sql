@@ -13,12 +13,10 @@ CREATE PROCEDURE dbo.sp_DataProfile
    @ShowForeignKeys BIT = 0 ,
    @ShowIndexes BIT = 0 ,
    @SampleValue INT = NULL ,
-   @SampleType NVARCHAR(50) = 'PERCENT'
+   @SampleType NVARCHAR(50) = 'PERCENT' ,
+   @Verbose BIT = 0
 AS
 BEGIN
-
-  PRINT @TableName
-
   SET NOCOUNT ON;
   SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 
@@ -94,8 +92,7 @@ BEGIN
     END 
 
     IF (@Mode IN (3, 4)) AND (@ColumnList IS NULL OR @ColumnList = '') 
-    BEGIN
-      
+    BEGIN      
       SET @msg = 'It looks like you didn''t provide a ColumnList. A ColumnList is required for the Candidate Key Check and the Column Value Distribution modes.';
       RAISERROR(@msg, 1, 1);
       RETURN;
@@ -191,6 +188,7 @@ BEGIN
       [filter_definition]    NVARCHAR(max)
     );
 
+    /* Inserting data into #table_column_profile */
     SET @SQLString = N'
       SELECT t.object_id ,
              c.column_id ,
@@ -198,11 +196,14 @@ BEGIN
              sys.name,
              typ.name ,
              c.collation_name ,
-             CASE  
-               WHEN sys.name = ''nvarchar'' THEN c.max_length / 2
-               WHEN sys.name = ''nchar'' THEN c.max_length / 2
-               ELSE c.max_length
-             END AS max_length ,
+             CAST(
+               CASE  
+                 WHEN c.max_length = -1 THEN c.max_length
+                 WHEN sys.name = ''nvarchar'' THEN c.max_length / 2
+                 WHEN sys.name = ''nchar'' THEN c.max_length / 2
+                 ELSE c.max_length
+               END
+             AS NVARCHAR(100)) AS max_length ,
              c.precision ,
              c.scale ,
              c.is_nullable
@@ -217,11 +218,15 @@ BEGIN
     WHERE  t.name = ''' + @TableName + '''
     ORDER BY c.column_id;'
 
+    IF @VERBOSE = 1
+    BEGIN
+      RAISERROR (N'Inserting data into #table_column_profile', 0, 1) WITH NOWAIT;
+      PRINT @SQLString
+    END
+
     IF @SQLString IS NULL 
       RAISERROR('@SQLString is null', 16, 1);
 
-    RAISERROR (N'Inserting data into #table_column_profile', 0, 1) WITH NOWAIT;
-  
     INSERT INTO #table_column_profile (
       [object_id] ,
       [column_id] ,
@@ -236,24 +241,27 @@ BEGIN
     ) 
     EXEC sp_executesql @SQLString;
   
-    /* Update actual row count  */
-    RAISERROR (N'Updating data in #table_column_profile for table row counts', 0, 1) WITH NOWAIT;
-      
+    /* Update actual row count  */     
     SET @SQLString = N'
       UPDATE #table_column_profile  
       SET num_rows = cnt 
       FROM (SELECT COUNT_BIG(*) cnt 
             FROM ' + @FromTableName + ') tablecount ;'
     
+    IF @VERBOSE = 1
+    BEGIN
+      PRINT @SQLString
+      RAISERROR (N'Updating data in #table_column_profile for table row counts', 0, 1) WITH NOWAIT;
+    END
+    
     IF @SQLString IS NULL 
       RAISERROR('@SQLString is null', 16, 1);
 
-    PRINT @SQLString
-      
     EXEC sp_executesql @SQLString;
       
     SELECT TOP 1 @RowCount = num_rows FROM #table_column_profile;
     
+    /* Insert FK data into #table_relationship */
     IF @ShowForeignKeys = 1
     BEGIN
 
@@ -298,8 +306,15 @@ BEGIN
                                                                                  AND s.name = ''' + @Schema + '''
         WHERE       tp.name = ''' + @TableName + ''''
     
-      PRINT @SQLString;
+      IF @VERBOSE = 1
+      BEGIN
+        PRINT @SQLString
+        RAISERROR (N'Insert FK data into #table_relationship', 0, 1) WITH NOWAIT;
+      END
     
+      IF @SQLString IS NULL 
+        RAISERROR('@SQLString is null', 16, 1);
+
       INSERT INTO #table_relationship (
         [relationship_type] ,
         [fk_name] ,
@@ -311,9 +326,6 @@ BEGIN
         [referenced_column_id]
       )
       EXEC sp_executesql @SQLString;
-
-      IF @SQLString IS NULL 
-        RAISERROR('@SQLString is null', 16, 1);
 
       SET @SQLStringFK = N'
         SELECT    [relationship_type] ,
@@ -331,6 +343,7 @@ BEGIN
 
     END
 
+    /* Insert Index data into #table_indexes */
     IF @ShowIndexes = 1
     BEGIN
 
@@ -372,7 +385,11 @@ BEGIN
           WHERE    i.object_id = OBJECT_ID(''' + @FromTableName + ''')
           ORDER BY i.index_id'
     
-      PRINT @SQLString;
+      IF @VERBOSE = 1
+      BEGIN
+        PRINT @SQLString
+        RAISERROR (N'Insert index data into #table_indexes', 0, 1) WITH NOWAIT;
+      END
     
       INSERT INTO #table_indexes (
         [name] ,
@@ -425,12 +442,8 @@ BEGIN
       
       FETCH NEXT FROM uniq_cur INTO @uniq_col_name, @uniq_col_id;
   
-   
       WHILE @@FETCH_STATUS = 0
-      BEGIN
-      
-        RAISERROR (N'Determine unique values for each column with a valid type.', 0, 1) WITH NOWAIT;
-    
+      BEGIN      
         SELECT @SQLString = N'
           UPDATE #table_column_profile 
           SET num_unique_values = val 
@@ -439,11 +452,16 @@ BEGIN
             FROM ' + @FromTableName + ') uniq 
           WHERE column_id = ' + CAST(@uniq_col_id AS NVARCHAR(10)) 
       
+        IF @VERBOSE = 1
+        BEGIN
+          PRINT @SQLString
+          RAISERROR (N'Determine unique values for each column with a valid type.', 0, 1) WITH NOWAIT;
+        END
+
         IF @SQLString IS NULL 
           RAISERROR('@SQLString is null', 16, 1);
-    
   
-       EXECUTE sp_executesql @SQLString;
+        EXECUTE sp_executesql @SQLString;
     
         FETCH NEXT FROM uniq_cur INTO @uniq_col_name, @uniq_col_id;
       END
@@ -466,8 +484,6 @@ BEGIN
       WHILE @@FETCH_STATUS = 0
       BEGIN
     
-        RAISERROR (N'Updating data in #table_column_profile for column null row counts', 0, 1) WITH NOWAIT;
-    
         SELECT @SQLString = 
           N'UPDATE #table_column_profile ' +
            'SET num_nulls = val ' + 
@@ -477,6 +493,12 @@ BEGIN
            '  WHERE ' + QUOTENAME(@null_col_name) + ' IS NULL ' +
            ') uniq ' +
            'WHERE column_id = ' + CAST(@null_col_num AS NVARCHAR(10))
+
+        IF @VERBOSE = 1
+        BEGIN
+          PRINT @SQLString
+          RAISERROR (N'Updating data in #table_column_profile for column null row counts.', 0, 1) WITH NOWAIT;
+        END
     
         IF @SQLString IS NULL 
           RAISERROR('@SQLString is null', 16, 1);
@@ -489,9 +511,7 @@ BEGIN
       CLOSE null_cur;
       DEALLOCATE null_cur;
     
-      /* Determine max length values */
-      RAISERROR (N'Updating data in #table_column_profile for column max length values', 0, 1) WITH NOWAIT;
-     
+      /* Determine min/max length values */
       DECLARE @len_col_name NVARCHAR(500) ,
               @len_col_num  INTEGER;
     
@@ -509,9 +529,6 @@ BEGIN
       
       WHILE @@FETCH_STATUS = 0
       BEGIN
-        
-        RAISERROR (N'Updating data in #table_column_profile for column max length', 0, 1) WITH NOWAIT;
-    
         SELECT @SQLString = 
           N'UPDATE #table_column_profile ' +
            'SET max_length = val ' + 
@@ -521,6 +538,12 @@ BEGIN
            ') uniq ' +
            'WHERE column_id = ' + CAST(@len_col_num AS NVARCHAR(10));
     
+        IF @Verbose = 1
+        BEGIN
+          RAISERROR (N'Updating data in #table_column_profile for column max length', 0, 1) WITH NOWAIT;
+          PRINT @SQLString;
+        END
+
         IF @SQLString IS NULL 
           RAISERROR('@SQLString is null', 16, 1);
     
@@ -534,10 +557,16 @@ BEGIN
            '  FROM ' + @FromTableName + ' ' +
            ') uniq ' +
            'WHERE column_id = ' + CAST(@len_col_num AS NVARCHAR(10));
+
+        IF @Verbose = 1
+        BEGIN
+          RAISERROR (N'Updating data in #table_column_profile for column min length', 0, 1) WITH NOWAIT;
+          PRINT @SQLString;
+        END
     
         IF @SQLString IS NULL 
           RAISERROR('@SQLString is null', 16, 1);
-    
+
         EXECUTE sp_executesql @SQLString;
 
         FETCH NEXT FROM len_cur INTO @len_col_name, @len_col_num;
@@ -552,7 +581,8 @@ BEGIN
     BEGIN
   
       /* Determine Column Statistics */
-      RAISERROR (N'Updating data in #table_column_profile for column statistics', 0, 1) WITH NOWAIT;
+      IF @Verbose = 1
+        RAISERROR (N'Updating data in #table_column_profile for column statistics', 0, 1) WITH NOWAIT;
      
       DECLARE @stats_col_name NVARCHAR(500) ,
               @stats_col_num  INTEGER ,
@@ -571,9 +601,6 @@ BEGIN
       
       WHILE @@FETCH_STATUS = 0
       BEGIN
-      
-        RAISERROR (N'Updating data in #table_column_profile for column max length', 0, 1) WITH NOWAIT;
-    
         SELECT @SQLString = N'  
           UPDATE #table_column_profile 
           SET max_value = max_val ,
@@ -584,6 +611,12 @@ BEGIN
             FROM ' + @FromTableName + ' 
            ) stats 
           WHERE column_id = ' + CAST(@stats_col_num AS NVARCHAR(10))
+
+        IF @Verbose = 1
+        BEGIN
+          RAISERROR (N'Updating data in #table_column_profile for column max length', 0, 1) WITH NOWAIT;
+          PRINT @SQLString;
+        END
   
         IF @SQLString IS NULL
           RAISERROR('@SQLString is null', 16, 1);
@@ -606,7 +639,13 @@ BEGIN
                    std_dev_val = CAST(CAST(STDEV(' + QUOTENAME(@stats_col_name) + ') AS NUMERIC(18,4)) AS NVARCHAR(100)) 
             FROM ' + @FromTableName + ' 
           ) stats WHERE column_id = ' + CAST(@stats_col_num AS NVARCHAR(10))
-      
+
+        IF @Verbose = 1
+        BEGIN
+          RAISERROR (N'Update mean, standard deviation', 0, 1) WITH NOWAIT;
+          PRINT @SQLString;
+        END
+        
         IF @SQLString IS NULL
           RAISERROR('@SQLString is null', 16, 1);
   
@@ -625,6 +664,12 @@ BEGIN
               FROM ' + @FromTableName + ' 
             ) stats 
             WHERE column_id = ' + CAST(@stats_col_num AS NVARCHAR(10))
+
+          IF @Verbose = 1
+          BEGIN
+            RAISERROR (N'Update median', 0, 1) WITH NOWAIT;
+            PRINT @SQLString;
+          END
   
           IF @SQLString IS NULL
             RAISERROR('@SQLString is null', 16, 1);
@@ -656,6 +701,11 @@ BEGIN
         SET @ColumnNameFirst = LEFT(@ColumnList, CHARINDEX(',', @ColumnList) - 1)
       ELSE 
         SET @ColumnNameFirst = RTRIM(LTRIM(@ColumnList))
+
+      IF RTRIM(LTRIM(@ColumnNameFirst)) <> RTRIM(LTRIM(@ColumnList))
+      BEGIN
+        RAISERROR(N'More than one column was supplied. Only the first column will be used in determining the column value distribution.', 0, 1);
+      END 
       
       SELECT @SQLString = N'
         INSERT INTO #table_distinct_count (column_count)
@@ -663,6 +713,12 @@ BEGIN
         FROM ' + @FromTableName + ' 
       ';
 
+      IF @Verbose = 1
+      BEGIN
+        RAISERROR (N'Insert distinct count for Column Value Distribution.', 0, 1) WITH NOWAIT;
+        PRINT @SQLString;
+      END
+  
       IF @SQLString IS NULL 
         RAISERROR('@SQLString is null', 16, 1);
   
@@ -673,7 +729,10 @@ BEGIN
     /* Table schema output */  
     IF @Mode = 0
     BEGIN
-  
+
+      IF @Verbose = 1
+        RAISERROR (N'Ouputting data for table schema output.', 0, 1) WITH NOWAIT;
+
       /* Table output */
       SELECT [object_id] = OBJECT_ID(QUOTENAME(@Schema) + '.' + QUOTENAME(@TableName)) ,
              [schema_name] = @Schema ,
@@ -699,7 +758,13 @@ BEGIN
 
       IF @ShowForeignKeys = 1
       BEGIN
-        IF @SQLString IS NULL 
+        IF @Verbose = 1
+        BEGIN
+          RAISERROR (N'Displaying Foreign Keys', 0, 1) WITH NOWAIT;
+          PRINT @SQLStringIndexes;
+        END
+
+        IF @SQLStringFK IS NULL 
           RAISERROR('@SQLStringFK is null', 16, 1);
   
         EXEC sp_executesql @SQLStringFK;
@@ -707,7 +772,13 @@ BEGIN
 
       IF @ShowIndexes = 1
       BEGIN
-        IF @SQLString IS NULL 
+        IF @Verbose = 1
+        BEGIN
+          RAISERROR (N'Displaying Indexes', 0, 1) WITH NOWAIT;
+          PRINT @SQLStringIndexes;
+        END
+
+        IF @SQLStringIndexes IS NULL 
           RAISERROR('@SQLStringIndexes is null', 16, 1);
   
         EXEC sp_executesql @SQLStringIndexes;
@@ -718,6 +789,9 @@ BEGIN
     IF @Mode = 1
     BEGIN
   
+      IF @Verbose = 1
+        RAISERROR (N'Ouputting data for table detail output.', 0, 1) WITH NOWAIT;
+
       /* Table output */
       SELECT   [object_id] = OBJECT_ID(QUOTENAME(@Schema) + '.' + QUOTENAME(@TableName)) ,
                [schema_name] = @Schema ,
@@ -748,7 +822,13 @@ BEGIN
 
       IF @ShowForeignKeys = 1
       BEGIN
-        IF @SQLString IS NULL 
+        IF @Verbose = 1
+        BEGIN
+          RAISERROR (N'Displaying Foreign Keys', 0, 1) WITH NOWAIT;
+          PRINT @SQLStringIndexes;
+        END
+
+        IF @SQLStringFK IS NULL 
           RAISERROR('@SQLStringFK is null', 16, 1);
   
         EXEC sp_executesql @SQLStringFK;
@@ -756,7 +836,13 @@ BEGIN
 
       IF @ShowIndexes = 1
       BEGIN
-        IF @SQLString IS NULL 
+        IF @Verbose = 1
+        BEGIN
+          RAISERROR (N'Displaying Indexes', 0, 1) WITH NOWAIT;
+          PRINT @SQLStringIndexes;
+        END
+
+        IF @SQLStringIndexes IS NULL 
           RAISERROR('@SQLStringIndexes is null', 16, 1);
   
         EXEC sp_executesql @SQLStringIndexes;
@@ -768,6 +854,9 @@ BEGIN
     IF @Mode = 2
     BEGIN
   
+      IF @Verbose = 1
+        RAISERROR (N'Ouputting data for column statistics output.', 0, 1) WITH NOWAIT;
+
       /* Table output */
       SELECT [object_id] = OBJECT_ID(QUOTENAME(@Schema) + '.' + QUOTENAME(@TableName)) ,
              [schema_name] = @Schema ,
@@ -789,7 +878,6 @@ BEGIN
                  [precision] ,
                  [scale] ,
                  [is_nullable] ,
-                 [collation] ,
                  [min_value] ,
                  [max_value] ,
                  [mean] ,'
@@ -809,7 +897,13 @@ BEGIN
 
       IF @ShowForeignKeys = 1
       BEGIN
-        IF @SQLString IS NULL 
+        IF @Verbose = 1
+        BEGIN
+          RAISERROR (N'Displaying Foreign Keys', 0, 1) WITH NOWAIT;
+          PRINT @SQLStringIndexes;
+        END
+
+        IF @SQLStringFK IS NULL 
           RAISERROR('@SQLStringFK is null', 16, 1);
   
         EXEC sp_executesql @SQLStringFK;
@@ -817,7 +911,13 @@ BEGIN
 
       IF @ShowIndexes = 1
       BEGIN
-        IF @SQLString IS NULL 
+        IF @Verbose = 1
+        BEGIN
+          RAISERROR (N'Displaying Indexes', 0, 1) WITH NOWAIT;
+          PRINT @SQLStringIndexes;
+        END
+
+        IF @SQLStringIndexes IS NULL 
           RAISERROR('@SQLStringIndexes is null', 16, 1);
   
         EXEC sp_executesql @SQLStringIndexes;
@@ -844,6 +944,12 @@ BEGIN
         HAVING    COUNT(*) > 1
        ';
 
+      IF @Verbose = 1
+      BEGIN
+        RAISERROR (N'Ouputting data for candidate key check.', 0, 1) WITH NOWAIT;
+        PRINT @SQLString;
+      END
+
       IF @SQLString IS NULL 
         RAISERROR('@SQLString is null', 16, 1);
   
@@ -851,7 +957,13 @@ BEGIN
 
       IF @ShowForeignKeys = 1
       BEGIN
-        IF @SQLString IS NULL 
+        IF @Verbose = 1
+        BEGIN
+          RAISERROR (N'Displaying Foreign Keys', 0, 1) WITH NOWAIT;
+          PRINT @SQLStringIndexes;
+        END
+
+        IF @SQLStringFK IS NULL 
           RAISERROR('@SQLStringFK is null', 16, 1);
   
         EXEC sp_executesql @SQLStringFK;
@@ -859,7 +971,13 @@ BEGIN
 
       IF @ShowIndexes = 1
       BEGIN
-        IF @SQLString IS NULL 
+        IF @Verbose = 1
+        BEGIN
+          RAISERROR (N'Displaying Indexes', 0, 1) WITH NOWAIT;
+          PRINT @SQLStringIndexes;
+        END
+
+        IF @SQLStringIndexes IS NULL 
           RAISERROR('@SQLStringIndexes is null', 16, 1);
   
         EXEC sp_executesql @SQLStringIndexes;
@@ -889,6 +1007,12 @@ BEGIN
         ORDER BY 2 DESC, 1
       ';
 
+      IF @Verbose = 1
+      BEGIN
+        RAISERROR (N'Ouputting data for column value distribution', 0, 1) WITH NOWAIT;
+        PRINT @SQLString;
+      END
+
       IF @SQLString IS NULL 
         RAISERROR('@SQLString is null', 16, 1);
   
@@ -896,7 +1020,13 @@ BEGIN
 
       IF @ShowForeignKeys = 1
       BEGIN
-        IF @SQLString IS NULL 
+        IF @Verbose = 1
+        BEGIN
+          RAISERROR (N'Displaying Foreign Keys', 0, 1) WITH NOWAIT;
+          PRINT @SQLStringIndexes;
+        END
+
+        IF @SQLStringFK IS NULL 
           RAISERROR('@SQLStringFK is null', 16, 1);
   
         EXEC sp_executesql @SQLStringFK;
@@ -904,7 +1034,13 @@ BEGIN
 
       IF @ShowIndexes = 1
       BEGIN
-        IF @SQLString IS NULL 
+        IF @Verbose = 1
+        BEGIN
+          RAISERROR (N'Displaying Indexes', 0, 1) WITH NOWAIT;
+          PRINT @SQLStringIndexes;
+        END
+
+        IF @SQLStringIndexes IS NULL 
           RAISERROR('@SQLStringIndexes is null', 16, 1);
   
         EXEC sp_executesql @SQLStringIndexes;
