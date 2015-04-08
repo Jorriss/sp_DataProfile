@@ -40,6 +40,7 @@ BEGIN
   DECLARE @SQLCompatLevelDB INT;
   DECLARE @SQLCompatLevelDBOut INT;
   DECLARE @SQLCompatLevel INT;
+  DECLARE @ViewSQLDataString NVARCHAR(4000);
 
   BEGIN TRY
 
@@ -130,10 +131,37 @@ BEGIN
     AND     state_desc = 'ONLINE';
           
     /* Format ColumnList  */
-    SET @ColumnList = RTRIM(LTRIM(@ColumnList));
+    DECLARE @ColumnListClean NVARCHAR(4000);
+    DECLARE @ColumnListComma NVARCHAR(4000);
+    DECLARE @CommaPos  INT;
+    DECLARE @CommaPart NVARCHAR(4000);
+    
+    SET @ColumnListComma = @ColumnList;
+    SET @ColumnListClean = '';
+    
+    IF RIGHT(RTRIM(@ColumnListComma), 1) <> N','
+      SET @ColumnListComma = @ColumnListComma + N',';
+    
+    SET @CommaPos =  PATINDEX(N'%,%', @ColumnListComma);
+    WHILE @CommaPos <> 0 
+    BEGIN
+      SET @CommaPart = LEFT(@ColumnListComma, @CommaPos - 1);
+      SET @ColumnListClean = @ColumnListClean + LTRIM(RTRIM(@CommaPart)) + ',';
+      SET @ColumnListComma = STUFF(@ColumnListComma, 1, @CommaPos, '');
+      SET @CommaPos = PATINDEX(N'%,%', @ColumnListComma);
+    END
+    
+    SET @ColumnList = @ColumnListClean;
+    
     IF RIGHT(@ColumnList, 1) = ','
       SET @ColumnList = LEFT(@ColumnList, LEN(@ColumnList) - 1);
     SET @ColumnListString = '''' + REPLACE(@ColumnList, ',', ''',''') + '''';
+
+    IF @VERBOSE = 1
+    BEGIN
+      SET @msg = N'ColumnListstring: ' + @ColumnList
+      RAISERROR (@msg, 0, 1) WITH NOWAIT;
+    END
 
     IF OBJECT_ID ('tempdb..#table_column_profile') IS NOT NULL
       DROP TABLE #table_column_profile;
@@ -221,7 +249,7 @@ BEGIN
     IF @VERBOSE = 1
     BEGIN
       RAISERROR (N'Inserting data into #table_column_profile', 0, 1) WITH NOWAIT;
-      PRINT @SQLString
+      RAISERROR (@SQLString, 0, 1) WITH NOWAIT;
     END
 
     IF @SQLString IS NULL 
@@ -250,8 +278,8 @@ BEGIN
     
     IF @VERBOSE = 1
     BEGIN
-      PRINT @SQLString
       RAISERROR (N'Updating data in #table_column_profile for table row counts', 0, 1) WITH NOWAIT;
+      RAISERROR (@SQLString, 0, 1) WITH NOWAIT;
     END
     
     IF @SQLString IS NULL 
@@ -308,8 +336,8 @@ BEGIN
     
       IF @VERBOSE = 1
       BEGIN
-        PRINT @SQLString
         RAISERROR (N'Insert FK data into #table_relationship', 0, 1) WITH NOWAIT;
+        RAISERROR (@SQLString, 0, 1) WITH NOWAIT;
       END
     
       IF @SQLString IS NULL 
@@ -387,8 +415,8 @@ BEGIN
     
       IF @VERBOSE = 1
       BEGIN
-        PRINT @SQLString
         RAISERROR (N'Insert index data into #table_indexes', 0, 1) WITH NOWAIT;
+        RAISERROR (@SQLString, 0, 1) WITH NOWAIT;
       END
     
       INSERT INTO #table_indexes (
@@ -454,8 +482,8 @@ BEGIN
       
         IF @VERBOSE = 1
         BEGIN
-          PRINT @SQLString
           RAISERROR (N'Determine unique values for each column with a valid type.', 0, 1) WITH NOWAIT;
+          RAISERROR (@SQLString, 0, 1) WITH NOWAIT;
         END
 
         IF @SQLString IS NULL 
@@ -496,8 +524,8 @@ BEGIN
 
         IF @VERBOSE = 1
         BEGIN
-          PRINT @SQLString
           RAISERROR (N'Updating data in #table_column_profile for column null row counts.', 0, 1) WITH NOWAIT;
+          RAISERROR (@SQLString, 0, 1) WITH NOWAIT;
         END
     
         IF @SQLString IS NULL 
@@ -541,7 +569,7 @@ BEGIN
         IF @Verbose = 1
         BEGIN
           RAISERROR (N'Updating data in #table_column_profile for column max length', 0, 1) WITH NOWAIT;
-          PRINT @SQLString;
+          RAISERROR (@SQLString, 0, 1) WITH NOWAIT;;
         END
 
         IF @SQLString IS NULL 
@@ -561,7 +589,7 @@ BEGIN
         IF @Verbose = 1
         BEGIN
           RAISERROR (N'Updating data in #table_column_profile for column min length', 0, 1) WITH NOWAIT;
-          PRINT @SQLString;
+          RAISERROR (@SQLString, 0, 1) WITH NOWAIT;;
         END
     
         IF @SQLString IS NULL 
@@ -615,7 +643,7 @@ BEGIN
         IF @Verbose = 1
         BEGIN
           RAISERROR (N'Updating data in #table_column_profile for column max length', 0, 1) WITH NOWAIT;
-          PRINT @SQLString;
+          RAISERROR (@SQLString, 0, 1) WITH NOWAIT;;
         END
   
         IF @SQLString IS NULL
@@ -643,7 +671,7 @@ BEGIN
         IF @Verbose = 1
         BEGIN
           RAISERROR (N'Update mean, standard deviation', 0, 1) WITH NOWAIT;
-          PRINT @SQLString;
+          RAISERROR (@SQLString, 0, 1) WITH NOWAIT;;
         END
         
         IF @SQLString IS NULL
@@ -668,7 +696,7 @@ BEGIN
           IF @Verbose = 1
           BEGIN
             RAISERROR (N'Update median', 0, 1) WITH NOWAIT;
-            PRINT @SQLString;
+            RAISERROR (@SQLString, 0, 1) WITH NOWAIT;;
           END
   
           IF @SQLString IS NULL
@@ -688,10 +716,95 @@ BEGIN
   
     END /* 2 - Column Statistics */
 
+    IF @Mode = 3 /* 3 - Candidate Key Check */
+    BEGIN
+
+      DECLARE @WhereString NVARCHAR(4000)
+      DECLARE @WhereCtr INT;
+
+      IF OBJECT_ID ('tempdb..#ColumnName') IS NOT NULL
+        DROP TABLE #ColumnName;
+
+      CREATE TABLE #ColumnName (
+        column_name NVARCHAR(500),
+        column_type NVARCHAR(100)
+      );
+
+      SET @WhereString = ' WHERE ';
+      SET @WhereCtr = 0;
+
+      SET @SQLString = N'
+        SELECT c.name ,
+               type = TYPE_NAME(c.system_type_id)
+        FROM   sys.tables t
+        JOIN   sys.columns c ON  c.object_id = t.object_id
+        WHERE  t.name = ''' + @TableName + '''
+        AND    t.schema_id = SCHEMA_ID(''' + @Schema + ''')
+        AND    c.name IN (' + @ColumnListString + ');'
+
+      IF @Verbose = 1
+      BEGIN
+        RAISERROR (N'Find data types for columns for Where clause Candidate Key Check', 0, 1) WITH NOWAIT;
+        RAISERROR (@SQLString, 0, 1) WITH NOWAIT;;
+      END
+
+      IF @SQLString IS NULL
+        RAISERROR('@SQLString is null', 16, 1);
+
+      INSERT INTO #ColumnName
+      EXECUTE sp_executesql @SQLString
+
+      -- Determine unique values for each column with a valid type.
+      DECLARE @where_col_name   NVARCHAR(500) ,
+              @where_type_name  NVARCHAR(100);
+      
+      DECLARE where_type_cur CURSOR
+        LOCAL STATIC FORWARD_ONLY READ_ONLY FOR
+           SELECT column_name ,
+                  column_type
+           FROM   #ColumnName
+    
+      OPEN where_type_cur;
+      
+      FETCH NEXT FROM where_type_cur INTO @where_col_name, @where_type_name;
+
+      WHILE @@FETCH_STATUS = 0
+      BEGIN      
+
+        SET @WhereCtr = @WhereCtr + 1;
+        IF @WhereCtr > 1
+          SET @WhereString = @WhereString + ' AND ';
+
+        IF @where_type_name IN ('uniqueidentifier', 'date', 'time', 'datetime2', 'datetimeoffset', 'smalldatetime', 'datetime', 'sql_variant', 'varchar', 'char', 'timestamp', 'nvarchar', 'nchar') 
+        BEGIN
+          SET @WhereString = @WhereString + @where_col_name + ' ='''''' + ' + @where_col_name + ' + ''''''';
+        END
+        ELSE
+        BEGIN
+          SET @WhereString = @WhereString + @where_col_name + ' = '' + CAST(' + @where_col_name + ' AS NVARCHAR(4000)) + ''';
+        END
+
+        FETCH NEXT FROM where_type_cur INTO @where_col_name, @where_type_name;
+      END
+
+      CLOSE where_type_cur;
+      DEALLOCATE where_type_cur; 
+  
+      IF @Verbose = 1
+      BEGIN
+        SET @msg = N'@WhereString: ' + @WhereString;
+        RAISERROR (@msg, 0, 1) WITH NOWAIT;
+      END
+
+    END /* 3 - Candidate Key Check */
+
     IF @Mode = 4 /* 4 - Column Value Distribution */
     BEGIN
 
       DECLARE @RowCountDistinct BIGINT;
+
+      IF OBJECT_ID ('tempdb..#table_distinct_count') IS NOT NULL
+        DROP TABLE #table_distinct_count;
 
       CREATE TABLE #table_distinct_count (
           [column_count] BIGINT NULL);
@@ -716,7 +829,7 @@ BEGIN
       IF @Verbose = 1
       BEGIN
         RAISERROR (N'Insert distinct count for Column Value Distribution.', 0, 1) WITH NOWAIT;
-        PRINT @SQLString;
+        RAISERROR (@SQLString, 0, 1) WITH NOWAIT;;
       END
   
       IF @SQLString IS NULL 
@@ -761,7 +874,7 @@ BEGIN
         IF @Verbose = 1
         BEGIN
           RAISERROR (N'Displaying Foreign Keys', 0, 1) WITH NOWAIT;
-          PRINT @SQLStringIndexes;
+          RAISERROR (@SQLStringFK, 0, 1) WITH NOWAIT;
         END
 
         IF @SQLStringFK IS NULL 
@@ -775,7 +888,7 @@ BEGIN
         IF @Verbose = 1
         BEGIN
           RAISERROR (N'Displaying Indexes', 0, 1) WITH NOWAIT;
-          PRINT @SQLStringIndexes;
+          RAISERROR (@SQLStringIndexes, 0, 1) WITH NOWAIT;
         END
 
         IF @SQLStringIndexes IS NULL 
@@ -825,7 +938,7 @@ BEGIN
         IF @Verbose = 1
         BEGIN
           RAISERROR (N'Displaying Foreign Keys', 0, 1) WITH NOWAIT;
-          PRINT @SQLStringIndexes;
+          RAISERROR (@SQLStringFK, 0, 1) WITH NOWAIT;
         END
 
         IF @SQLStringFK IS NULL 
@@ -839,7 +952,7 @@ BEGIN
         IF @Verbose = 1
         BEGIN
           RAISERROR (N'Displaying Indexes', 0, 1) WITH NOWAIT;
-          PRINT @SQLStringIndexes;
+          RAISERROR (@SQLStringIndexes, 0, 1) WITH NOWAIT;
         END
 
         IF @SQLStringIndexes IS NULL 
@@ -900,7 +1013,7 @@ BEGIN
         IF @Verbose = 1
         BEGIN
           RAISERROR (N'Displaying Foreign Keys', 0, 1) WITH NOWAIT;
-          PRINT @SQLStringIndexes;
+          RAISERROR (@SQLStringFK, 0, 1) WITH NOWAIT;
         END
 
         IF @SQLStringFK IS NULL 
@@ -914,7 +1027,7 @@ BEGIN
         IF @Verbose = 1
         BEGIN
           RAISERROR (N'Displaying Indexes', 0, 1) WITH NOWAIT;
-          PRINT @SQLStringIndexes;
+          RAISERROR (@SQLStringIndexes, 0, 1) WITH NOWAIT;
         END
 
         IF @SQLStringIndexes IS NULL 
@@ -936,9 +1049,10 @@ BEGIN
              [row_count] = @RowCount ,
              [is_sample] = CASE @IsSample WHEN 1 THEN 'True' ELSE 'False' END;
 
-      SELECT @SQLString = N'
+      SET @SQLString = N'
         SELECT    COUNT(*) AS row_count ,
-                  ' + @ColumnList + ' 
+                  ' + @ColumnList + ' ,
+                  view_data_sql = ''SELECT * FROM ' + @FromTableName + @WhereString + '''
         FROM      ' + @FromTableName + '
         GROUP BY  ' + @ColumnList + '
         HAVING    COUNT(*) > 1
@@ -947,7 +1061,7 @@ BEGIN
       IF @Verbose = 1
       BEGIN
         RAISERROR (N'Ouputting data for candidate key check.', 0, 1) WITH NOWAIT;
-        PRINT @SQLString;
+        RAISERROR (@SQLString, 0, 1) WITH NOWAIT;;
       END
 
       IF @SQLString IS NULL 
@@ -960,7 +1074,7 @@ BEGIN
         IF @Verbose = 1
         BEGIN
           RAISERROR (N'Displaying Foreign Keys', 0, 1) WITH NOWAIT;
-          PRINT @SQLStringIndexes;
+          RAISERROR (@SQLStringFK, 0, 1) WITH NOWAIT;
         END
 
         IF @SQLStringFK IS NULL 
@@ -974,7 +1088,7 @@ BEGIN
         IF @Verbose = 1
         BEGIN
           RAISERROR (N'Displaying Indexes', 0, 1) WITH NOWAIT;
-          PRINT @SQLStringIndexes;
+          RAISERROR (@SQLStringIndexes, 0, 1) WITH NOWAIT;
         END
 
         IF @SQLStringIndexes IS NULL 
@@ -1010,7 +1124,7 @@ BEGIN
       IF @Verbose = 1
       BEGIN
         RAISERROR (N'Ouputting data for column value distribution', 0, 1) WITH NOWAIT;
-        PRINT @SQLString;
+        RAISERROR (@SQLString, 0, 1) WITH NOWAIT;;
       END
 
       IF @SQLString IS NULL 
@@ -1023,7 +1137,7 @@ BEGIN
         IF @Verbose = 1
         BEGIN
           RAISERROR (N'Displaying Foreign Keys', 0, 1) WITH NOWAIT;
-          PRINT @SQLStringIndexes;
+          RAISERROR (@SQLStringFK, 0, 1) WITH NOWAIT;
         END
 
         IF @SQLStringFK IS NULL 
@@ -1037,7 +1151,7 @@ BEGIN
         IF @Verbose = 1
         BEGIN
           RAISERROR (N'Displaying Indexes', 0, 1) WITH NOWAIT;
-          PRINT @SQLStringIndexes;
+          RAISERROR (@SQLStringIndexes, 0, 1) WITH NOWAIT;
         END
 
         IF @SQLStringIndexes IS NULL 
