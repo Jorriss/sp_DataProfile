@@ -719,7 +719,7 @@ BEGIN
     IF @Mode = 3 /* 3 - Candidate Key Check */
     BEGIN
 
-      DECLARE @WhereString NVARCHAR(4000)
+      DECLARE @WhereString NVARCHAR(MAX)
       DECLARE @WhereCtr INT;
 
       IF OBJECT_ID ('tempdb..#ColumnName') IS NOT NULL
@@ -756,7 +756,8 @@ BEGIN
 
       -- Determine unique values for each column with a valid type.
       DECLARE @where_col_name   NVARCHAR(500) ,
-              @where_type_name  NVARCHAR(100);
+              @where_type_name  NVARCHAR(100) ,
+              @where_col_value  NVARCHAR(500) ;
       
       DECLARE where_type_cur CURSOR
         LOCAL STATIC FORWARD_ONLY READ_ONLY FOR
@@ -775,13 +776,20 @@ BEGIN
         IF @WhereCtr > 1
           SET @WhereString = @WhereString + ' AND ';
 
+        IF @where_type_name IN ('datetime', 'datetime2', 'date', 'time', 'datetimeoffset', 'smalldatetime')
+        BEGIN
+          SET @where_col_value = 'CONVERT(NVARCHAR, ' + @where_col_name + ', 127)'
+        END
+        ELSE
+          SET @where_col_value = 'CONVERT(NVARCHAR(MAX), ' + @where_col_name + ')'
+
         IF @where_type_name IN ('uniqueidentifier', 'date', 'time', 'datetime2', 'datetimeoffset', 'smalldatetime', 'datetime', 'sql_variant', 'varchar', 'char', 'timestamp', 'nvarchar', 'nchar') 
         BEGIN
-          SET @WhereString = @WhereString + @where_col_name + ' ='''''' + ' + @where_col_name + ' + ''''''';
+          SET @WhereString = @WhereString + @where_col_name + ''' + COALESCE('' = '''''' + ' + @where_col_value + ' + '''''''', '' IS NULL'') + ''';
         END
         ELSE
         BEGIN
-          SET @WhereString = @WhereString + @where_col_name + ' = '' + CAST(' + @where_col_name + ' AS NVARCHAR(4000)) + ''';
+          SET @WhereString = @WhereString + @where_col_name + ''' + COALESCE('' = '' + ' + @where_col_value + ' + '''', '' IS NULL'') + ''';
         END
 
         FETCH NEXT FROM where_type_cur INTO @where_col_name, @where_type_name;
@@ -1056,6 +1064,7 @@ BEGIN
         FROM      ' + @FromTableName + '
         GROUP BY  ' + @ColumnList + '
         HAVING    COUNT(*) > 1
+        ORDER BY  1 DESC
        ';
 
       IF @Verbose = 1
