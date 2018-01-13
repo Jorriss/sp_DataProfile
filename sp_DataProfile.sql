@@ -121,12 +121,12 @@ BEGIN
 
     SET @FromTableName = QUOTENAME(@Schema) + '.' + QUOTENAME(@TableName) + @TableSample;
 
-    IF DB_NAME() <> @DatabaseName
+    If DB_NAME() <> @DatabaseName
       SET @FromTableName = QUOTENAME(@DatabaseName) + '.' + @FromTableName;
 
     SELECT  @DatabaseID = database_id
     FROM    sys.databases
-    WHERE   [name] = @DatabaseName 
+    WHERE   [name] = @DatabaseName
     AND     user_access_desc = 'MULTI_USER'
     AND     state_desc = 'ONLINE';
           
