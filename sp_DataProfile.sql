@@ -130,7 +130,7 @@ BEGIN
     AND     user_access_desc = 'MULTI_USER'
     AND     state_desc = 'ONLINE';
           
-    /* Format ColumnList  */ 
+    /* Format ColumnList  */
     DECLARE @ColumnListClean NVARCHAR(4000);
     DECLARE @ColumnListComma NVARCHAR(4000);
     DECLARE @CommaPos  INT;
