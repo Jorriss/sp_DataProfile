@@ -14,15 +14,61 @@ CREATE PROCEDURE dbo.sp_DataProfile
    @ShowIndexes BIT = 0 ,
    @SampleValue INT = NULL ,
    @SampleType NVARCHAR(50) = 'PERCENT' ,
+   @ExactRowCount BIT = 0 ,
+   @ApproxDistinct BIT = 0 ,
    @Verbose BIT = 0
+/*
+sp_DataProfile v0.3 - Apr 20, 2015
+
+(C) 2015, Jorriss LLC 
+See http://jorriss.com/eula for the End User Licensing Agreement.
+
+Documentation is located at: http://www.jorriss.com/spdataprofile
+
+How to use:
+Mode:
+0 = Table Overview 
+1 = Column Detail - Number Unique Values, Number Nulls, Min Len, Max Len
+2 = Column Statistics - Min, Max, Mean, Median, Standard Deviation
+3 = Candidate Key Check - You need a @ColumnList with this
+4 = Column Value Distribution - You need to provide a single column name in @ColumnList. If more than one is provided only the first one is used.
+
+You can use @ShowIndexes = 1 and @ShowForeignKeys = 1 in any mode to see all of the indexes and foreign keys.
+
+Example usage:
+Table Overview
+sp_dataprofile 'Users', 0;
+
+Table Overview with Indexes and FKs
+sp_dataprofile 'Users', 0, @ShowIndexes=1, @ShowForeignKeys=1;
+
+Column Detail
+sp_dataprofile 'Users', 1
+
+Column Statistics - Only using 10% of the table values
+sp_dataprofile 'Users', 2, @SampleValue = 10
+
+Candidate Key Check
+sp_dataprofile 'Users', 3, 'DisplayName, Location, WebsiteUrl, CreationDate'
+
+Column Value Distribution
+sp_dataprofile 'Posts', 4, 'PostTypeId'
+
+Sampling note:
+When @SampleValue is supplied, sampling is done with TABLESAMPLE, which is page-based (it
+returns all rows from a random set of pages, not a random set of rows). As a result num_rows,
+the distinct/unique counts, the null counts, and any ratio columns derived from them reflect
+the SAMPLE, not the full table. Omit @SampleValue for exact, full-table results.
+
+*/
 AS
 BEGIN
   SET NOCOUNT ON;
   SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 
-  DECLARE @SQLString NVARCHAR(4000);
-  DECLARE @SQLStringFK NVARCHAR(4000);
-  DECLARE @SQLStringIndexes NVARCHAR(4000);
+  DECLARE @SQLString NVARCHAR(MAX);
+  DECLARE @SQLStringFK NVARCHAR(MAX);
+  DECLARE @SQLStringIndexes NVARCHAR(MAX);
   DECLARE @Schema NVARCHAR(100);
   DECLARE @DatabaseID INT;
   DECLARE @SchemaPosition INT;
@@ -33,19 +79,22 @@ BEGIN
   DECLARE @IsSample BIT = 0;
   DECLARE @TableSample NVARCHAR(100) = '';
   DECLARE @FromTableName NVARCHAR(100) = '';
-  DECLARE @ColumnListString NVARCHAR(4000);
+  DECLARE @ColumnListString NVARCHAR(MAX);
   DECLARE @ColumnNameFirst NVARCHAR(4000);
   DECLARE @SQLServerVersion NVARCHAR(100) = '';
   DECLARE @SQLCompatLevelMaster INT;
   DECLARE @SQLCompatLevelDB INT;
   DECLARE @SQLCompatLevelDBOut INT;
   DECLARE @SQLCompatLevel INT;
+  DECLARE @SQLMajorVersion INT;
   DECLARE @ViewSQLDataString NVARCHAR(4000);
 
   BEGIN TRY
 
     /* Get that SQL Server Version son! 2005 or older up in here! */
     SELECT @SQLServerVersion = CAST(SERVERPROPERTY('ProductVersion') AS NVARCHAR(128));
+
+    SET @SQLMajorVersion = CAST(LEFT(@SQLServerVersion, CHARINDEX('.', @SQLServerVersion, 0) - 1) AS INT);
 
     IF (SELECT LEFT(@SQLServerVersion, CHARINDEX('.', @SQLServerVersion, 0) -1 )) <= 8
     BEGIN
@@ -131,10 +180,10 @@ BEGIN
     AND     state_desc = 'ONLINE';
           
     /* Format ColumnList  */
-    DECLARE @ColumnListClean NVARCHAR(4000);
-    DECLARE @ColumnListComma NVARCHAR(4000);
+    DECLARE @ColumnListClean NVARCHAR(MAX);
+    DECLARE @ColumnListComma NVARCHAR(MAX);
     DECLARE @CommaPos  INT;
-    DECLARE @CommaPart NVARCHAR(4000);
+    DECLARE @CommaPart NVARCHAR(MAX);
     
     SET @ColumnListComma = @ColumnList;
     SET @ColumnListClean = '';
@@ -269,13 +318,24 @@ BEGIN
     ) 
     EXEC sp_executesql @SQLString;
   
-    /* Update actual row count  */     
-    SET @SQLString = N'
-      UPDATE #table_column_profile  
-      SET num_rows = cnt 
-      FROM (SELECT COUNT_BIG(*) cnt 
-            FROM ' + @FromTableName + ') tablecount ;'
-    
+    /* Update actual row count.
+       Default path reads the row count from metadata (near-instant, no scan).
+       Sampling or @ExactRowCount = 1 forces a real COUNT_BIG(*) over the (sampled) table. */
+    IF @IsSample = 1 OR @ExactRowCount = 1
+      SET @SQLString = N'
+        UPDATE #table_column_profile
+        SET num_rows = cnt
+        FROM (SELECT COUNT_BIG(*) cnt
+              FROM ' + @FromTableName + ') tablecount ;'
+    ELSE
+      SET @SQLString = N'
+        UPDATE #table_column_profile
+        SET num_rows = cnt
+        FROM (SELECT SUM(ps.row_count) cnt
+              FROM ' + QUOTENAME(@DatabaseName) + '.sys.dm_db_partition_stats ps
+              WHERE ps.object_id = OBJECT_ID(''' + QUOTENAME(@DatabaseName) + '.' + QUOTENAME(@Schema) + '.' + QUOTENAME(@TableName) + ''')
+              AND   ps.index_id IN (0,1)) tablecount ;'
+
     IF @VERBOSE = 1
     BEGIN
       RAISERROR (N'Updating data in #table_column_profile for table row counts', 0, 1) WITH NOWAIT;
@@ -464,7 +524,9 @@ BEGIN
           SELECT p.name,
                  p.column_id
           FROM   #table_column_profile p
-          WHERE  system_type IN ('uniqueidentifier', 'date', 'time', 'datetime2', 'datetimeoffset', 'tinyint', 'smallint', 'int', 'smalldatetime', 'real', 'money', 'datetime', 'float', 'sql_variant', 'bit', 'decimal', 'numeric', 'smallmoney' ,'bigint', 'hierarchyid', 'geometry', 'geography', 'varbinary', 'varchar', 'binary', 'char', 'timestamp', 'nvarchar', 'nchar') ;
+          WHERE  system_type IN ('uniqueidentifier', 'date', 'time', 'datetime2', 'datetimeoffset', 'tinyint', 'smallint', 'int', 'smalldatetime', 'real', 'money', 'datetime', 'float', 'sql_variant', 'bit', 'decimal', 'numeric', 'smallmoney' ,'bigint', 'varbinary', 'varchar', 'binary', 'char', 'timestamp', 'nvarchar', 'nchar')
+          /* Skip LOB/CLR types where COUNT(DISTINCT) is expensive and rarely meaningful. */
+          AND NOT (system_type IN ('nvarchar', 'varchar', 'varbinary') AND length = -1) ;
     
       OPEN uniq_cur;
       
@@ -473,11 +535,13 @@ BEGIN
       WHILE @@FETCH_STATUS = 0
       BEGIN      
         SELECT @SQLString = N'
-          UPDATE #table_column_profile 
-          SET num_unique_values = val 
+          UPDATE #table_column_profile
+          SET num_unique_values = val
           FROM (
-            SELECT COUNT(DISTINCT ' + QUOTENAME(@uniq_col_name) + ') val 
-            FROM ' + @FromTableName + ') uniq 
+            SELECT ' + CASE WHEN @ApproxDistinct = 1 AND @SQLMajorVersion >= 15
+                            THEN 'APPROX_COUNT_DISTINCT(' + QUOTENAME(@uniq_col_name) + ')'
+                            ELSE 'COUNT(DISTINCT ' + QUOTENAME(@uniq_col_name) + ')' END + ' val
+            FROM ' + @FromTableName + ') uniq
           WHERE column_id = ' + CAST(@uniq_col_id AS NVARCHAR(10)) 
       
         IF @VERBOSE = 1
@@ -493,8 +557,11 @@ BEGIN
     
         FETCH NEXT FROM uniq_cur INTO @uniq_col_name, @uniq_col_id;
       END
-        
-      -- Determine null values for each column   
+
+      CLOSE uniq_cur;
+      DEALLOCATE uniq_cur;
+
+      -- Determine null values for each column
       DECLARE @null_col_name NVARCHAR(500) ,
               @null_col_num  INTEGER;
     
@@ -629,56 +696,48 @@ BEGIN
       
       WHILE @@FETCH_STATUS = 0
       BEGIN
-        SELECT @SQLString = N'  
-          UPDATE #table_column_profile 
-          SET max_value = max_val ,
-              min_value = min_val 
-          FROM (
-            SELECT CAST(MAX(' + QUOTENAME(@stats_col_name) + ') AS NVARCHAR(100)) max_val  ,
-                   CAST(MIN(' + QUOTENAME(@stats_col_name) + ') AS NVARCHAR(100)) min_val  
-            FROM ' + @FromTableName + ' 
-           ) stats 
-          WHERE column_id = ' + CAST(@stats_col_num AS NVARCHAR(10))
-
-        IF @Verbose = 1
-        BEGIN
-          RAISERROR (N'Updating data in #table_column_profile for column max length', 0, 1) WITH NOWAIT;
-          RAISERROR (@SQLString, 0, 1) WITH NOWAIT;;
-        END
-  
-        IF @SQLString IS NULL
-          RAISERROR('@SQLString is null', 16, 1);
-  
-        IF @stats_col_type != 'bit'
-          EXECUTE sp_executesql @SQLString;
-  
-        /* Update mean, standard deviation */
+        /* Combined single-scan stats: MAX/MIN for every non-bit type, plus
+           AVG/STDEV for numeric types, computed in one pass over the table.
+           (bit is skipped entirely, matching the prior behavior.) */
         DECLARE @col_name NVARCHAR(100) = QUOTENAME(@stats_col_name);
-      
+
         IF @stats_col_type = 'int'
           SET @col_name = 'CAST(' + QUOTENAME(@stats_col_name) + ' AS BIGINT)';
-  
-        SELECT @SQLString = N'
-          UPDATE #table_column_profile 
-          SET mean = mean_val ,
-              std_dev = std_dev_val
-          FROM (
-            SELECT mean_val = CAST(AVG(' + @col_name + ') AS NVARCHAR(100)) ,
-                   std_dev_val = CAST(CAST(STDEV(' + QUOTENAME(@stats_col_name) + ') AS NUMERIC(18,4)) AS NVARCHAR(100)) 
-            FROM ' + @FromTableName + ' 
-          ) stats WHERE column_id = ' + CAST(@stats_col_num AS NVARCHAR(10))
 
-        IF @Verbose = 1
+        DECLARE @IsNumericStat BIT =
+          CASE WHEN @stats_col_type IN ('bigint', 'decimal', 'int', 'money', 'numeric', 'smallint', 'smallmoney', 'tinyint', 'float', 'real')
+               THEN 1 ELSE 0 END;
+
+        IF @stats_col_type != 'bit'
         BEGIN
-          RAISERROR (N'Update mean, standard deviation', 0, 1) WITH NOWAIT;
-          RAISERROR (@SQLString, 0, 1) WITH NOWAIT;;
-        END
-        
-        IF @SQLString IS NULL
-          RAISERROR('@SQLString is null', 16, 1);
-  
-        IF @stats_col_type IN ('bigint', 'decimal', 'int', 'money', 'numeric', 'smallint', 'smallmoney', 'tinyint', 'float', 'real')
+          SELECT @SQLString = N'
+            UPDATE #table_column_profile
+            SET max_value = max_val ,
+                min_value = min_val'
+                + CASE WHEN @IsNumericStat = 1 THEN N' ,
+                mean = mean_val ,
+                std_dev = std_dev_val' ELSE N'' END + N'
+            FROM (
+              SELECT CAST(MAX(' + QUOTENAME(@stats_col_name) + ') AS NVARCHAR(100)) max_val ,
+                     CAST(MIN(' + QUOTENAME(@stats_col_name) + ') AS NVARCHAR(100)) min_val'
+                     + CASE WHEN @IsNumericStat = 1 THEN N' ,
+                     CAST(AVG(' + @col_name + ') AS NVARCHAR(100)) mean_val ,
+                     CAST(CAST(STDEV(' + QUOTENAME(@stats_col_name) + ') AS NUMERIC(18,4)) AS NVARCHAR(100)) std_dev_val' ELSE N'' END + N'
+              FROM ' + @FromTableName + '
+            ) stats
+            WHERE column_id = ' + CAST(@stats_col_num AS NVARCHAR(10))
+
+          IF @Verbose = 1
+          BEGIN
+            RAISERROR (N'Updating data in #table_column_profile for column min/max/mean/std_dev', 0, 1) WITH NOWAIT;
+            RAISERROR (@SQLString, 0, 1) WITH NOWAIT;;
+          END
+
+          IF @SQLString IS NULL
+            RAISERROR('@SQLString is null', 16, 1);
+
           EXECUTE sp_executesql @SQLString;
+        END
        
         /* Update median */
         IF @SQLCompatLevel >= 110
@@ -688,7 +747,7 @@ BEGIN
             UPDATE #table_column_profile 
             SET median = median_val
             FROM (
-              SELECT DISTINCT median_val = PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY ' + @stats_col_name + ') OVER ()
+              SELECT DISTINCT median_val = PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY ' + QUOTENAME(@stats_col_name) + ') OVER ()
               FROM ' + @FromTableName + ' 
             ) stats 
             WHERE column_id = ' + CAST(@stats_col_num AS NVARCHAR(10))
@@ -736,10 +795,11 @@ BEGIN
       SET @SQLString = N'
         SELECT c.name ,
                type = TYPE_NAME(c.system_type_id)
-        FROM   sys.tables t
-        JOIN   sys.columns c ON  c.object_id = t.object_id
+        FROM   ' + QUOTENAME(@DatabaseName) + '.sys.tables  t
+        JOIN   ' + QUOTENAME(@DatabaseName) + '.sys.columns c ON  c.object_id = t.object_id
+        JOIN   ' + QUOTENAME(@DatabaseName) + '.sys.schemas s ON  t.schema_id = s.schema_id
+                                                             AND s.name = ''' + @Schema + '''
         WHERE  t.name = ''' + @TableName + '''
-        AND    t.schema_id = SCHEMA_ID(''' + @Schema + ''')
         AND    c.name IN (' + @ColumnListString + ');'
 
       IF @Verbose = 1
@@ -830,8 +890,10 @@ BEGIN
       
       SELECT @SQLString = N'
         INSERT INTO #table_distinct_count (column_count)
-        SELECT COUNT(DISTINCT ' + QUOTENAME(@ColumnNameFirst) + ') val 
-        FROM ' + @FromTableName + ' 
+        SELECT ' + CASE WHEN @ApproxDistinct = 1 AND @SQLMajorVersion >= 15
+                        THEN 'APPROX_COUNT_DISTINCT(' + QUOTENAME(@ColumnNameFirst) + ')'
+                        ELSE 'COUNT(DISTINCT ' + QUOTENAME(@ColumnNameFirst) + ')' END + ' val
+        FROM ' + @FromTableName + '
       ';
 
       IF @Verbose = 1
