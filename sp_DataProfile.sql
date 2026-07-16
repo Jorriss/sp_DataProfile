@@ -20,10 +20,10 @@ CREATE PROCEDURE dbo.sp_DataProfile
 /*
 sp_DataProfile v0.3 - Apr 20, 2015
 
-(C) 2015, Jorriss LLC 
-See http://jorriss.com/eula for the End User Licensing Agreement.
+(C) 2026, Jorriss LLC
+Released under the MIT License. See the LICENSE file for details.
 
-Documentation is located at: http://www.jorriss.com/spdataprofile
+Source is located at: https://github.com/Jorriss/sp_DataProfile
 
 How to use:
 Mode:
@@ -210,6 +210,34 @@ BEGIN
     BEGIN
       SET @msg = N'ColumnListstring: ' + @ColumnList
       RAISERROR (@msg, 0, 1) WITH NOWAIT;
+    END
+
+    /* Build a column-name filter set so Mode 1 can honor @ColumnList and
+       profile only the requested columns instead of every column. When no
+       @ColumnList is supplied the set stays empty and every column is profiled. */
+    IF OBJECT_ID ('tempdb..#column_filter') IS NOT NULL
+      DROP TABLE #column_filter;
+
+    CREATE TABLE #column_filter ( col_name NVARCHAR(500) NOT NULL );
+
+    IF @ColumnList IS NOT NULL AND @ColumnList <> ''
+    BEGIN
+      DECLARE @cfRemaining NVARCHAR(MAX);
+      DECLARE @cfPos       INT;
+
+      SET @cfRemaining = @ColumnList + N',';
+      SET @cfPos = PATINDEX(N'%,%', @cfRemaining);
+
+      WHILE @cfPos <> 0
+      BEGIN
+        SET @CommaPart = LTRIM(RTRIM(LEFT(@cfRemaining, @cfPos - 1)));
+
+        IF @CommaPart <> ''
+          INSERT INTO #column_filter (col_name) VALUES (@CommaPart);
+
+        SET @cfRemaining = STUFF(@cfRemaining, 1, @cfPos, '');
+        SET @cfPos = PATINDEX(N'%,%', @cfRemaining);
+      END
     END
 
     IF OBJECT_ID ('tempdb..#table_column_profile') IS NOT NULL
@@ -526,7 +554,10 @@ BEGIN
           FROM   #table_column_profile p
           WHERE  system_type IN ('uniqueidentifier', 'date', 'time', 'datetime2', 'datetimeoffset', 'tinyint', 'smallint', 'int', 'smalldatetime', 'real', 'money', 'datetime', 'float', 'sql_variant', 'bit', 'decimal', 'numeric', 'smallmoney' ,'bigint', 'varbinary', 'varchar', 'binary', 'char', 'timestamp', 'nvarchar', 'nchar')
           /* Skip LOB/CLR types where COUNT(DISTINCT) is expensive and rarely meaningful. */
-          AND NOT (system_type IN ('nvarchar', 'varchar', 'varbinary') AND length = -1) ;
+          AND NOT (system_type IN ('nvarchar', 'varchar', 'varbinary') AND length = -1)
+          /* Honor @ColumnList when supplied; profile all columns when it isn't. */
+          AND (NOT EXISTS (SELECT 1 FROM #column_filter)
+               OR p.name IN (SELECT col_name FROM #column_filter)) ;
     
       OPEN uniq_cur;
       
@@ -570,7 +601,10 @@ BEGIN
           SELECT p.name,
                  p.column_id
           FROM   #table_column_profile p
-          WHERE  p.is_nullable = 1;
+          WHERE  p.is_nullable = 1
+          /* Honor @ColumnList when supplied; profile all columns when it isn't. */
+          AND    (NOT EXISTS (SELECT 1 FROM #column_filter)
+                  OR p.name IN (SELECT col_name FROM #column_filter));
     
       OPEN null_cur;
       
@@ -616,7 +650,10 @@ BEGIN
           SELECT p.name,
                  p.column_id
           FROM   #table_column_profile p
-          WHERE  p.system_type IN ('varchar', 'char', 'nvarchar', 'nchar');
+          WHERE  p.system_type IN ('varchar', 'char', 'nvarchar', 'nchar')
+          /* Honor @ColumnList when supplied; profile all columns when it isn't. */
+          AND    (NOT EXISTS (SELECT 1 FROM #column_filter)
+                  OR p.name IN (SELECT col_name FROM #column_filter));
     
       OPEN len_cur;
       
@@ -624,42 +661,25 @@ BEGIN
       
       WHILE @@FETCH_STATUS = 0
       BEGIN
-        SELECT @SQLString = 
+        /* Compute min and max length in a single scan of the table instead of
+           one scan each — halves the IO for every string column. */
+        SELECT @SQLString =
           N'UPDATE #table_column_profile ' +
-           'SET max_length = val ' + 
+           'SET min_length = val_min, max_length = val_max ' +
            'FROM (' +
-           '  SELECT MAX(LEN(' + QUOTENAME(@len_col_name) + ')) val ' +
-           '  FROM ' + @FromTableName + ' ' +
-           ') uniq ' +
-           'WHERE column_id = ' + CAST(@len_col_num AS NVARCHAR(10));
-    
-        IF @Verbose = 1
-        BEGIN
-          RAISERROR (N'Updating data in #table_column_profile for column max length', 0, 1) WITH NOWAIT;
-          RAISERROR (@SQLString, 0, 1) WITH NOWAIT;;
-        END
-
-        IF @SQLString IS NULL 
-          RAISERROR('@SQLString is null', 16, 1);
-    
-        EXECUTE sp_executesql @SQLString;
-      
-        SELECT @SQLString = 
-          N'UPDATE #table_column_profile ' +
-           'SET min_length = val ' + 
-           'FROM (' +
-           '  SELECT MIN(LEN(' + QUOTENAME(@len_col_name) + ')) val ' +
+           '  SELECT MIN(LEN(' + QUOTENAME(@len_col_name) + ')) val_min, ' +
+           '         MAX(LEN(' + QUOTENAME(@len_col_name) + ')) val_max ' +
            '  FROM ' + @FromTableName + ' ' +
            ') uniq ' +
            'WHERE column_id = ' + CAST(@len_col_num AS NVARCHAR(10));
 
         IF @Verbose = 1
         BEGIN
-          RAISERROR (N'Updating data in #table_column_profile for column min length', 0, 1) WITH NOWAIT;
+          RAISERROR (N'Updating data in #table_column_profile for column min/max length', 0, 1) WITH NOWAIT;
           RAISERROR (@SQLString, 0, 1) WITH NOWAIT;;
         END
-    
-        IF @SQLString IS NULL 
+
+        IF @SQLString IS NULL
           RAISERROR('@SQLString is null', 16, 1);
 
         EXECUTE sp_executesql @SQLString;
