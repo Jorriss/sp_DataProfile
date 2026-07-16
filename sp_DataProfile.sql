@@ -77,8 +77,8 @@ BEGIN
   DECLARE @ErrorState INT;
   DECLARE @RowCount BIGINT;
   DECLARE @IsSample BIT = 0;
-  DECLARE @TableSample NVARCHAR(100) = '';
-  DECLARE @FromTableName NVARCHAR(100) = '';
+  DECLARE @TableSample NVARCHAR(300) = '';
+  DECLARE @FromTableName NVARCHAR(300) = '';
   DECLARE @ColumnListString NVARCHAR(MAX);
   DECLARE @ColumnNameFirst NVARCHAR(4000);
   DECLARE @SQLServerVersion NVARCHAR(100) = '';
@@ -91,14 +91,14 @@ BEGIN
 
   BEGIN TRY
 
-    /* Get that SQL Server Version son! 2005 or older up in here! */
+    /* Get that SQL Server Version son! 2012 or older up in here! */
     SELECT @SQLServerVersion = CAST(SERVERPROPERTY('ProductVersion') AS NVARCHAR(128));
 
     SET @SQLMajorVersion = CAST(LEFT(@SQLServerVersion, CHARINDEX('.', @SQLServerVersion, 0) - 1) AS INT);
 
-    IF (SELECT LEFT(@SQLServerVersion, CHARINDEX('.', @SQLServerVersion, 0) -1 )) <= 8
+    IF @SQLMajorVersion < 11
     BEGIN
-      SET @msg = N'I''m sorry Dave. I can''t run on your version of SQL Server. I require a SQL Server 2005 and higher. The version of this instance is: ' + @SQLServerVersion + '. I promise I won''t open the airlock.';
+      SET @msg = N'I''m sorry Dave. I can''t run on your version of SQL Server. I require a SQL Server 2012 and higher. The version of this instance is: ' + @SQLServerVersion + '. I promise I won''t open the airlock.';
       RAISERROR(@msg, 16, 1);
     END
 
@@ -542,154 +542,127 @@ BEGIN
     END
 
     IF @Mode = 1 /* Table Detail */
-    BEGIN         
-      -- Determine unique values for each column with a valid type.
-      DECLARE @uniq_col_name NVARCHAR(500) ,
-              @uniq_col_id  INTEGER;
-      
-      DECLARE uniq_cur CURSOR
+    BEGIN
+      /* Single-pass rewrite: instead of one UPDATE (one table scan) per metric per
+         column, build ONE wide aggregate SELECT that computes every Mode 1 metric for
+         every eligible column, materialize it into a 1-row #agg (the only base-table
+         scan), then reshape that row into #table_column_profile via CROSS APPLY (VALUES).
+         Turns 100+ scans on a wide table into a single scan. */
+
+      DECLARE @m1_col_name NVARCHAR(500) ,
+              @m1_col_id   INTEGER ,
+              @m1_col_type NVARCHAR(100) ,
+              @m1_len      INTEGER ,
+              @m1_nullable BIT;
+
+      DECLARE @AggSelect NVARCHAR(MAX) = N'' ,  /* comma-separated aggregate expressions for #agg */
+              @Unpivot   NVARCHAR(MAX) = N'' ,  /* comma-separated VALUES rows for the reshape */
+              @m1_qn     NVARCHAR(300) ,
+              @m1_cid    NVARCHAR(10) ,
+              @uOK       BIT ,
+              @nOK       BIT ,
+              @lOK       BIT;
+
+      DECLARE m1_cur CURSOR
         LOCAL STATIC FORWARD_ONLY READ_ONLY FOR
-          SELECT p.name,
-                 p.column_id
+          SELECT p.name ,
+                 p.column_id ,
+                 p.system_type ,
+                 p.length ,
+                 p.is_nullable
           FROM   #table_column_profile p
-          WHERE  system_type IN ('uniqueidentifier', 'date', 'time', 'datetime2', 'datetimeoffset', 'tinyint', 'smallint', 'int', 'smalldatetime', 'real', 'money', 'datetime', 'float', 'sql_variant', 'bit', 'decimal', 'numeric', 'smallmoney' ,'bigint', 'varbinary', 'varchar', 'binary', 'char', 'timestamp', 'nvarchar', 'nchar')
-          /* Skip LOB/CLR types where COUNT(DISTINCT) is expensive and rarely meaningful. */
-          AND NOT (system_type IN ('nvarchar', 'varchar', 'varbinary') AND length = -1)
           /* Honor @ColumnList when supplied; profile all columns when it isn't. */
-          AND (NOT EXISTS (SELECT 1 FROM #column_filter)
-               OR p.name IN (SELECT col_name FROM #column_filter)) ;
-    
-      OPEN uniq_cur;
-      
-      FETCH NEXT FROM uniq_cur INTO @uniq_col_name, @uniq_col_id;
-  
-      WHILE @@FETCH_STATUS = 0
-      BEGIN      
-        SELECT @SQLString = N'
-          UPDATE #table_column_profile
-          SET num_unique_values = val
-          FROM (
-            SELECT ' + CASE WHEN @ApproxDistinct = 1 AND @SQLMajorVersion >= 15
-                            THEN 'APPROX_COUNT_DISTINCT(' + QUOTENAME(@uniq_col_name) + ')'
-                            ELSE 'COUNT(DISTINCT ' + QUOTENAME(@uniq_col_name) + ')' END + ' val
-            FROM ' + @FromTableName + ') uniq
-          WHERE column_id = ' + CAST(@uniq_col_id AS NVARCHAR(10)) 
-      
-        IF @VERBOSE = 1
-        BEGIN
-          RAISERROR (N'Determine unique values for each column with a valid type.', 0, 1) WITH NOWAIT;
-          RAISERROR (@SQLString, 0, 1) WITH NOWAIT;
-        END
-
-        IF @SQLString IS NULL 
-          RAISERROR('@SQLString is null', 16, 1);
-  
-        EXECUTE sp_executesql @SQLString;
-    
-        FETCH NEXT FROM uniq_cur INTO @uniq_col_name, @uniq_col_id;
-      END
-
-      CLOSE uniq_cur;
-      DEALLOCATE uniq_cur;
-
-      -- Determine null values for each column
-      DECLARE @null_col_name NVARCHAR(500) ,
-              @null_col_num  INTEGER;
-    
-      DECLARE null_cur CURSOR
-        LOCAL STATIC FORWARD_ONLY READ_ONLY FOR
-          SELECT p.name,
-                 p.column_id
-          FROM   #table_column_profile p
-          WHERE  p.is_nullable = 1
-          /* Honor @ColumnList when supplied; profile all columns when it isn't. */
-          AND    (NOT EXISTS (SELECT 1 FROM #column_filter)
+          WHERE  (NOT EXISTS (SELECT 1 FROM #column_filter)
                   OR p.name IN (SELECT col_name FROM #column_filter));
-    
-      OPEN null_cur;
-      
-      FETCH NEXT FROM null_cur INTO @null_col_name, @null_col_num;
-      
+
+      OPEN m1_cur;
+
+      FETCH NEXT FROM m1_cur INTO @m1_col_name, @m1_col_id, @m1_col_type, @m1_len, @m1_nullable;
+
       WHILE @@FETCH_STATUS = 0
       BEGIN
-    
-        SELECT @SQLString = 
-          N'UPDATE #table_column_profile ' +
-           'SET num_nulls = val ' + 
-           'FROM (' +
-           '  SELECT COUNT(*) val ' +
-           '  FROM ' + @FromTableName + ' ' +
-           '  WHERE ' + QUOTENAME(@null_col_name) + ' IS NULL ' +
-           ') uniq ' +
-           'WHERE column_id = ' + CAST(@null_col_num AS NVARCHAR(10))
+        SET @m1_qn  = QUOTENAME(@m1_col_name);
+        SET @m1_cid = CAST(@m1_col_id AS NVARCHAR(10));
 
-        IF @VERBOSE = 1
+        /* num_unique_values: valid types only, skipping LOB (max) where COUNT(DISTINCT) is expensive. */
+        SET @uOK = CASE WHEN @m1_col_type IN ('uniqueidentifier', 'date', 'time', 'datetime2', 'datetimeoffset', 'tinyint', 'smallint', 'int', 'smalldatetime', 'real', 'money', 'datetime', 'float', 'sql_variant', 'bit', 'decimal', 'numeric', 'smallmoney', 'bigint', 'varbinary', 'varchar', 'binary', 'char', 'timestamp', 'nvarchar', 'nchar')
+                        AND NOT (@m1_col_type IN ('nvarchar', 'varchar', 'varbinary') AND @m1_len = -1)
+                        THEN 1 ELSE 0 END;
+        /* num_nulls: nullable columns of any type. */
+        SET @nOK = @m1_nullable;
+        /* min/max length: string types only. */
+        SET @lOK = CASE WHEN @m1_col_type IN ('varchar', 'char', 'nvarchar', 'nchar') THEN 1 ELSE 0 END;
+
+        IF @uOK = 1 OR @nOK = 1 OR @lOK = 1
         BEGIN
-          RAISERROR (N'Updating data in #table_column_profile for column null row counts.', 0, 1) WITH NOWAIT;
-          RAISERROR (@SQLString, 0, 1) WITH NOWAIT;
+          IF @uOK = 1
+            SET @AggSelect = @AggSelect + CASE WHEN @AggSelect <> N'' THEN N', ' ELSE N'' END
+              + N'CAST(' + CASE WHEN @ApproxDistinct = 1 AND @SQLMajorVersion >= 15
+                                THEN N'APPROX_COUNT_DISTINCT(' + @m1_qn + N')'
+                                ELSE N'COUNT(DISTINCT ' + @m1_qn + N')' END
+              + N' AS BIGINT) AS u' + @m1_cid;
+
+          IF @nOK = 1
+            SET @AggSelect = @AggSelect + CASE WHEN @AggSelect <> N'' THEN N', ' ELSE N'' END
+              + N'CAST(COUNT_BIG(CASE WHEN ' + @m1_qn + N' IS NULL THEN 1 END) AS BIGINT) AS n' + @m1_cid;
+
+          IF @lOK = 1
+            SET @AggSelect = @AggSelect + CASE WHEN @AggSelect <> N'' THEN N', ' ELSE N'' END
+              + N'CAST(MIN(LEN(' + @m1_qn + N')) AS INT) AS mnl' + @m1_cid
+              + N', CAST(MAX(LEN(' + @m1_qn + N')) AS INT) AS mxl' + @m1_cid;
+
+          /* Matching VALUES row. Typed NULLs (never bare NULL) keep the unpivoted
+             columns single-typed regardless of which metrics a column qualifies for. */
+          SET @Unpivot = @Unpivot + CASE WHEN @Unpivot <> N'' THEN N',
+            ' ELSE N'' END
+            + N'(' + @m1_cid + N', '
+            + CASE WHEN @uOK = 1 THEN N'a.u'   + @m1_cid ELSE N'CAST(NULL AS BIGINT)' END + N', '
+            + CASE WHEN @nOK = 1 THEN N'a.n'   + @m1_cid ELSE N'CAST(NULL AS BIGINT)' END + N', '
+            + CASE WHEN @lOK = 1 THEN N'a.mnl' + @m1_cid ELSE N'CAST(NULL AS INT)'    END + N', '
+            + CASE WHEN @lOK = 1 THEN N'a.mxl' + @m1_cid ELSE N'CAST(NULL AS INT)'    END + N')';
         END
-    
-        IF @SQLString IS NULL 
-          RAISERROR('@SQLString is null', 16, 1);
-    
-        EXECUTE sp_executesql @SQLString;
-        
-        FETCH NEXT FROM null_cur INTO @null_col_name, @null_col_num;
+
+        FETCH NEXT FROM m1_cur INTO @m1_col_name, @m1_col_id, @m1_col_type, @m1_len, @m1_nullable;
       END
-      
-      CLOSE null_cur;
-      DEALLOCATE null_cur;
-    
-      /* Determine min/max length values */
-      DECLARE @len_col_name NVARCHAR(500) ,
-              @len_col_num  INTEGER;
-    
-      DECLARE len_cur CURSOR
-  
-       LOCAL STATIC FORWARD_ONLY READ_ONLY FOR
-          SELECT p.name,
-                 p.column_id
-          FROM   #table_column_profile p
-          WHERE  p.system_type IN ('varchar', 'char', 'nvarchar', 'nchar')
-          /* Honor @ColumnList when supplied; profile all columns when it isn't. */
-          AND    (NOT EXISTS (SELECT 1 FROM #column_filter)
-                  OR p.name IN (SELECT col_name FROM #column_filter));
-    
-      OPEN len_cur;
-      
-      FETCH NEXT FROM len_cur INTO @len_col_name, @len_col_num;
-      
-      WHILE @@FETCH_STATUS = 0
+
+      CLOSE m1_cur;
+      DEALLOCATE m1_cur;
+
+      /* Skip entirely when no column qualified for any metric (e.g. @ColumnList
+         names only excluded columns) — an empty select list would be a syntax error. */
+      IF @AggSelect <> N''
       BEGIN
-        /* Compute min and max length in a single scan of the table instead of
-           one scan each — halves the IO for every string column. */
-        SELECT @SQLString =
-          N'UPDATE #table_column_profile ' +
-           'SET min_length = val_min, max_length = val_max ' +
-           'FROM (' +
-           '  SELECT MIN(LEN(' + QUOTENAME(@len_col_name) + ')) val_min, ' +
-           '         MAX(LEN(' + QUOTENAME(@len_col_name) + ')) val_max ' +
-           '  FROM ' + @FromTableName + ' ' +
-           ') uniq ' +
-           'WHERE column_id = ' + CAST(@len_col_num AS NVARCHAR(10));
+        SET @SQLString = N'
+          IF OBJECT_ID(''tempdb..#agg'') IS NOT NULL DROP TABLE #agg;
+
+          SELECT ' + @AggSelect + N'
+          INTO #agg
+          FROM ' + @FromTableName + N';
+
+          UPDATE p
+          SET num_unique_values = v.uniq ,
+              num_nulls         = v.nulls ,
+              min_length        = v.minlen ,
+              max_length        = v.maxlen
+          FROM #table_column_profile p
+          JOIN #agg a ON 1 = 1
+          CROSS APPLY (VALUES
+            ' + @Unpivot + N'
+          ) v(column_id, uniq, nulls, minlen, maxlen)
+          WHERE v.column_id = p.column_id;';
 
         IF @Verbose = 1
         BEGIN
-          RAISERROR (N'Updating data in #table_column_profile for column min/max length', 0, 1) WITH NOWAIT;
-          RAISERROR (@SQLString, 0, 1) WITH NOWAIT;;
+          RAISERROR (N'Single-pass column detail: one scan for all metrics.', 0, 1) WITH NOWAIT;
+          RAISERROR (@SQLString, 0, 1) WITH NOWAIT;
         END
 
         IF @SQLString IS NULL
           RAISERROR('@SQLString is null', 16, 1);
 
         EXECUTE sp_executesql @SQLString;
-
-        FETCH NEXT FROM len_cur INTO @len_col_name, @len_col_num;
       END
-      
-      CLOSE len_cur;
-      DEALLOCATE len_cur; 
-  
+
     END /* Table Detail */
   
     IF @Mode = 2 /* Column Statistics */
@@ -1021,7 +994,11 @@ BEGIN
                [nulls_ratio] ,
                [min_length] ,
                [max_length]
-      FROM #table_column_profile;
+      FROM #table_column_profile
+      /* Honor @ColumnList when supplied; display all columns when it isn't. */
+      WHERE (NOT EXISTS (SELECT 1 FROM #column_filter)
+             OR [name] IN (SELECT col_name FROM #column_filter))
+      ORDER BY [column_id];
 
       IF @ShowForeignKeys = 1
       BEGIN

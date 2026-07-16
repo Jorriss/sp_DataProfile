@@ -4,8 +4,8 @@ A single stored procedure for profiling data in Microsoft SQL Server. Point it a
 
 ## Requirements
 
-- SQL Server 2005 or higher (the proc refuses to run on 2000 and older).
-- Median calculations (Mode 2) require compatibility level 110 or higher (SQL Server 2012+), since they rely on `PERCENTILE_DISC`. Lower compat levels run fine but skip the median column.
+- SQL Server 2012 or higher (the proc refuses to run on 2008 R2 and older).
+- Median calculations (Mode 2) require compatibility level 110 or higher, since they rely on `PERCENTILE_DISC`. Compatibility level is per-database, so a database set to a lower compat level runs fine but skips the median column.
 
 ## Installation
 

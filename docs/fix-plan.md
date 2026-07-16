@@ -8,7 +8,7 @@ Goal: fix the correctness issues and the safe performance wins now, and stage th
 
 Decisions:
 - **Phase it** — Phase 1 (correctness) + Phase 2 (safe perf) ship first; Phase 3 (single-pass rewrite) is a separate follow-up done after 1 & 2 are verified.
-- **Version-adaptive** — no hard minimum bump; pick the best construct per detected version/compat level.
+- **Version-adaptive** — pick the best construct per detected version/compat level. (Update: the Phase 3 Mode 1 rewrite raised the hard floor to **SQL Server 2012** so it can use `CROSS APPLY (VALUES ...)` for the reshape.)
 
 ---
 
@@ -38,9 +38,11 @@ All in `sp_DataProfile.sql`.
 
 10. **Skip distinct on LOB/CLR types.** Extend the type filter feeding the unique cursor (line 505) to exclude `nvarchar(max)`/`varchar(max)`/`varbinary(max)`/`xml`/`geography`/`geometry`/`hierarchyid` — `COUNT(DISTINCT)` on these is expensive and rarely meaningful. (`max` detection via `length = -1`.)
 
-## Phase 3 — Single-pass rewrite (separate follow-up, after 1 & 2 verified)
+## Phase 3 — Single-pass rewrite
 
-Not implemented in this pass. Recorded here so it isn't lost: collapse Mode 1 (and Mode 2's non-median stats) into **one** dynamically-built `SELECT` that emits every aggregate for every column in a single row (`COUNT_BIG(*)`, per-column `COUNT(DISTINCT)`/`SUM(CASE WHEN col IS NULL...)`, `MIN/MAX(LEN(col))`), then unpivot that one row into `#table_column_profile`. Turns 100+ scans into 1. Deferred because it materially changes internal logic and needs the Phase 1/2 correctness base and a test harness in place first.
+**Mode 1 — done.** The three per-metric cursors were replaced with one code-gen cursor that builds a single wide `SELECT ... INTO #agg` (per-column `COUNT(DISTINCT)`/`SUM(CASE WHEN col IS NULL...)`, `MIN/MAX(LEN(col))`) — the only base-table scan — then reshapes that 1-row `#agg` into `#table_column_profile` with one `UPDATE ... CROSS APPLY (VALUES ...)`. Turns 100+ scans into 1. This raised the compatibility floor to SQL Server 2012 (needed for the `VALUES` reshape). An empty-select guard skips the whole block when no column qualifies.
+
+**Mode 2 — still deferred.** Collapse Mode 2's non-median stats into one `SELECT ... INTO #agg` the same way (min/max/mean/stddev, one scan) and combine all medians into a single second scan (`PERCENTILE_DISC ... OVER ()` per column, aggregated to one row — window functions can't share the scalar-aggregate scan, so median stays a separate pass). Mode 2 lands at 2 scans total instead of ~2 per numeric column.
 
 ---
 

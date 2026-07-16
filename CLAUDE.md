@@ -15,8 +15,8 @@ A single T-SQL stored procedure, [sp_DataProfile.sql](sp_DataProfile.sql) (~1,30
 
 ## Minimum SQL Server version (the compatibility floor)
 
-- Must run on **SQL Server 2005+**. The proc checks `SERVERPROPERTY('ProductVersion')` and hard-errors on older versions. Do **not** introduce syntax that raises this floor.
-- Median (Mode 2) uses `PERCENTILE_DISC`, which needs **compatibility level 110+** (SQL Server 2012+). Lower compat levels must still run — they just skip the median column with a warning. Preserve this graceful degradation.
+- Must run on **SQL Server 2012+**. The proc checks `SERVERPROPERTY('ProductVersion')` and hard-errors (`@SQLMajorVersion < 11`) on older versions. Do **not** introduce syntax that raises this floor (e.g. anything requiring 2014+). Constructs available at the 2012 floor — such as the `VALUES` row constructor and `CROSS APPLY (VALUES ...)` — are fair game and are used by the Mode 1 single-pass reshape.
+- Median (Mode 2) uses `PERCENTILE_DISC`, which needs **compatibility level 110+**. Compatibility level is per-database and independent of server version, so a 2012+ instance can still run a DB at a lower compat level — those must still run and just skip the median column with a warning. Preserve this graceful degradation.
 
 ## Conventions to match
 
