@@ -49,8 +49,8 @@ BEGIN
 
     IF (SELECT LEFT(@SQLServerVersion, CHARINDEX('.', @SQLServerVersion, 0) -1 )) <= 8
     BEGIN
-      SET @msg = N'I''m sorry Dave. I can''t run on your version of SQL Server. I require a SQL Server 2005 and higher. The version of this instance is: ' + @SQLServerVersion + '. I promise I won''t open the airlock.';
-      RAISERROR(@msg, 16, 1);
+      SET @Msg = N'I''m sorry Dave. I can''t run on your version of SQL Server. I require a SQL Server 2005 and higher. The version of this instance is: ' + @SQLServerVersion + '. I promise I won''t open the airlock.';
+      RAISERROR(@Msg, 16, 1);
     END
 
     IF @DatabaseName IS NULL
@@ -76,7 +76,7 @@ BEGIN
     IF @SQLCompatLevel < 110
     BEGIN 
       SET @Msg = 'Your compatibility level of ' + CAST(@SQLCompatLevel AS NVARCHAR(10)) + ' is a bit too low. I can''t perform median calculations for compatibility levels lower than 110. If this is unacceptable to you feel free to write the median calculation yourself. I accept pull requests. ;)';
-      RAISERROR(@msg, 0, 1);
+      RAISERROR(@Msg, 0, 1);
     END
 
     SET @Schema = PARSENAME(@TableName, 2);
@@ -87,29 +87,29 @@ BEGIN
 
     IF @Mode NOT IN (0, 1, 2, 3, 4) 
     BEGIN
-      SET @msg = 'Mode values should only be 0, 1, 2, 3 or 4. 0 = Table Overview, 1 = Table Detail, 2 = Column Statistics, 3 = Candidate Key Check, 4 = Column Value Distribution';
-      RAISERROR(@msg, 1, 1);
+      SET @Msg = 'Mode values should only be 0, 1, 2, 3 or 4. 0 = Table Overview, 1 = Table Detail, 2 = Column Statistics, 3 = Candidate Key Check, 4 = Column Value Distribution';
+      RAISERROR(@Msg, 1, 1);
       RETURN;
     END 
 
     IF (@Mode IN (3, 4)) AND (@ColumnList IS NULL OR @ColumnList = '') 
     BEGIN      
-      SET @msg = 'It looks like you didn''t provide a ColumnList. A ColumnList is required for the Candidate Key Check and the Column Value Distribution modes.';
-      RAISERROR(@msg, 1, 1);
+      SET @Msg = 'It looks like you didn''t provide a ColumnList. A ColumnList is required for the Candidate Key Check and the Column Value Distribution modes.';
+      RAISERROR(@Msg, 1, 1);
       RETURN;
     END 
   
     IF @SampleType NOT IN ('ROWS', 'PERCENT') 
     BEGIN
-      SET @msg = 'Did you mistype the SampleType value? SampleType should be either ''ROWS'' or ''PERCENT''';
-      RAISERROR(@msg, 1, 1);
+      SET @Msg = 'Did you mistype the SampleType value? SampleType should be either ''ROWS'' or ''PERCENT''';
+      RAISERROR(@Msg, 1, 1);
       RETURN;
     END 
 
     IF @SampleValue < 0 OR @SampleValue > 100 
     BEGIN
-      SET @msg = 'Whoops. The SampleValue should be between 0 and 100.';
-      RAISERROR(@msg, 1, 1);
+      SET @Msg = 'Whoops. The SampleValue should be between 0 and 100.';
+      RAISERROR(@Msg, 1, 1);
       RETURN;
     END
 
@@ -157,10 +157,10 @@ BEGIN
       SET @ColumnList = LEFT(@ColumnList, LEN(@ColumnList) - 1);
     SET @ColumnListString = '''' + REPLACE(@ColumnList, ',', ''',''') + '''';
 
-    IF @VERBOSE = 1
+    IF @Verbose = 1
     BEGIN
-      SET @msg = N'ColumnListstring: ' + @ColumnList
-      RAISERROR (@msg, 0, 1) WITH NOWAIT;
+      SET @Msg = N'ColumnListstring: ' + @ColumnList
+      RAISERROR (@Msg, 0, 1) WITH NOWAIT;
     END
 
     IF OBJECT_ID ('tempdb..#table_column_profile') IS NOT NULL
@@ -246,7 +246,7 @@ BEGIN
     WHERE  t.name = ''' + @TableName + '''
     ORDER BY c.column_id;'
 
-    IF @VERBOSE = 1
+    IF @Verbose = 1
     BEGIN
       RAISERROR (N'Inserting data into #table_column_profile', 0, 1) WITH NOWAIT;
       RAISERROR (@SQLString, 0, 1) WITH NOWAIT;
@@ -276,7 +276,7 @@ BEGIN
       FROM (SELECT COUNT_BIG(*) cnt 
             FROM ' + @FromTableName + ') tablecount ;'
     
-    IF @VERBOSE = 1
+    IF @Verbose = 1
     BEGIN
       RAISERROR (N'Updating data in #table_column_profile for table row counts', 0, 1) WITH NOWAIT;
       RAISERROR (@SQLString, 0, 1) WITH NOWAIT;
@@ -334,7 +334,7 @@ BEGIN
                                                                                  AND s.name = ''' + @Schema + '''
         WHERE       tp.name = ''' + @TableName + ''''
     
-      IF @VERBOSE = 1
+      IF @Verbose = 1
       BEGIN
         RAISERROR (N'Insert FK data into #table_relationship', 0, 1) WITH NOWAIT;
         RAISERROR (@SQLString, 0, 1) WITH NOWAIT;
@@ -413,7 +413,7 @@ BEGIN
           WHERE    i.object_id = OBJECT_ID(''' + @FromTableName + ''')
           ORDER BY i.index_id'
     
-      IF @VERBOSE = 1
+      IF @Verbose = 1
       BEGIN
         RAISERROR (N'Insert index data into #table_indexes', 0, 1) WITH NOWAIT;
         RAISERROR (@SQLString, 0, 1) WITH NOWAIT;
@@ -480,7 +480,7 @@ BEGIN
             FROM ' + @FromTableName + ') uniq 
           WHERE column_id = ' + CAST(@uniq_col_id AS NVARCHAR(10)) 
       
-        IF @VERBOSE = 1
+        IF @Verbose = 1
         BEGIN
           RAISERROR (N'Determine unique values for each column with a valid type.', 0, 1) WITH NOWAIT;
           RAISERROR (@SQLString, 0, 1) WITH NOWAIT;
@@ -522,7 +522,7 @@ BEGIN
            ') uniq ' +
            'WHERE column_id = ' + CAST(@null_col_num AS NVARCHAR(10))
 
-        IF @VERBOSE = 1
+        IF @Verbose = 1
         BEGIN
           RAISERROR (N'Updating data in #table_column_profile for column null row counts.', 0, 1) WITH NOWAIT;
           RAISERROR (@SQLString, 0, 1) WITH NOWAIT;
@@ -800,8 +800,8 @@ BEGIN
   
       IF @Verbose = 1
       BEGIN
-        SET @msg = N'@WhereString: ' + @WhereString;
-        RAISERROR (@msg, 0, 1) WITH NOWAIT;
+        SET @Msg = N'@WhereString: ' + @WhereString;
+        RAISERROR (@Msg, 0, 1) WITH NOWAIT;
       END
 
     END /* 3 - Candidate Key Check */
@@ -1182,9 +1182,9 @@ BEGIN
   BEGIN CATCH
     RAISERROR (N'Uh oh. Something bad happend.', 0,1) WITH NOWAIT;
   
-    SELECT  @msg = ERROR_MESSAGE(), @ErrorSeverity = ERROR_SEVERITY(), @ErrorState = ERROR_STATE();
+    SELECT  @Msg = ERROR_MESSAGE(), @ErrorSeverity = ERROR_SEVERITY(), @ErrorState = ERROR_STATE();
   
-    RAISERROR (@msg, @ErrorSeverity, @ErrorState);
+    RAISERROR (@Msg, @ErrorSeverity, @ErrorState);
     
     WHILE @@trancount > 0 
       ROLLBACK;
