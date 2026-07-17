@@ -55,10 +55,72 @@ GO
 :r .\unit\VersionMatrix.sql
 :r .\unit\StackOverflowSmoke.sql
 
-/* 7. Run everything. */
+/* 7. Run everything.
+      tSQLt.RunAll raises a severity-16 error when any test fails; under sqlcmd -b
+      that aborts the whole script right here, skipping the report/exit steps
+      below. Swallow it in TRY/CATCH — step 7b lists the failures by name and
+      step 8 sets the non-zero exit code. RunAll still prints its own summary. */
 USE [DataProfileTest];
 GO
-EXEC tSQLt.RunAll;
+BEGIN TRY
+    EXEC tSQLt.RunAll;
+END TRY
+BEGIN CATCH
+END CATCH;
+GO
+
+/* 7b. List anything that didn't pass, by name — RunAll's console summary
+       doesn't enumerate the failures. Reads tSQLt.TestResult, the same table
+       step 8 uses for the exit code. */
+IF EXISTS (SELECT 1 FROM tSQLt.TestResult WHERE Result NOT IN ('Success', 'Skipped'))
+BEGIN
+    PRINT '';
+    PRINT '=== Tests that did not pass ===';
+    DECLARE @line NVARCHAR(MAX);
+    /* Leading marker (not '[') on purpose: sqlcmd strips a leading [bracketed]
+       token from PRINT output, which would eat the class name. */
+    DECLARE failed_tests CURSOR LOCAL FAST_FORWARD FOR
+        SELECT '  ' + Result + ': ' + Name + CHAR(13) + CHAR(10) + '      ' + ISNULL(Msg, '')
+        FROM tSQLt.TestResult
+        WHERE Result NOT IN ('Success', 'Skipped')
+        ORDER BY Result, Class, TestCase;
+    OPEN failed_tests;
+    FETCH NEXT FROM failed_tests INTO @line;
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+        PRINT @line;
+        FETCH NEXT FROM failed_tests INTO @line;
+    END
+    CLOSE failed_tests;
+    DEALLOCATE failed_tests;
+END
+GO
+
+/* 7c. Summary line: total run, succeeded, failed. Skipped tests are counted
+       separately so "run" reflects tests that actually executed. */
+DECLARE @total    INT ,
+        @succeeded INT ,
+        @failed    INT ,
+        @skipped   INT ,
+        @summary   NVARCHAR(MAX);
+
+SELECT @total     = COUNT(*) ,
+       @succeeded = SUM(CASE WHEN Result = 'Success' THEN 1 ELSE 0 END) ,
+       @skipped   = SUM(CASE WHEN Result = 'Skipped' THEN 1 ELSE 0 END) ,
+       @failed    = SUM(CASE WHEN Result NOT IN ('Success', 'Skipped') THEN 1 ELSE 0 END)
+FROM   tSQLt.TestResult;
+
+SET @summary = '=== Test summary: '
+    + CAST(@total - @skipped AS NVARCHAR(10)) + ' run, '
+    + CAST(@succeeded AS NVARCHAR(10)) + ' succeeded, '
+    + CAST(@failed AS NVARCHAR(10)) + ' failed'
+    + CASE WHEN @skipped > 0
+           THEN ' (' + CAST(@skipped AS NVARCHAR(10)) + ' skipped)'
+           ELSE '' END
+    + ' ===';
+
+PRINT '';
+PRINT @summary;
 GO
 
 /* 8. Non-zero exit (with sqlcmd -b) if anything failed. */

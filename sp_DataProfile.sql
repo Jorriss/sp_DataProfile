@@ -78,6 +78,7 @@ BEGIN
   DECLARE @IsSample BIT = 0;
   DECLARE @TableSample NVARCHAR(300) = '';
   DECLARE @FromTableName NVARCHAR(300) = '';
+  DECLARE @FromTableNameClean NVARCHAR(300) = '';   -- object name only, no TABLESAMPLE (for OBJECT_ID)
   DECLARE @ColumnListString NVARCHAR(MAX);
   DECLARE @ColumnNameFirst NVARCHAR(4000);
   DECLARE @SQLServerVersion NVARCHAR(100) = '';
@@ -167,10 +168,14 @@ BEGIN
       SET @TableSample = ' TABLESAMPLE (' + CAST(@SampleValue AS NVARCHAR(3)) + ' ' + @SampleType + ') REPEATABLE(100) ';
     END
 
-    SET @FromTableName = QUOTENAME(@Schema) + '.' + QUOTENAME(@TableName) + @TableSample;
+    SET @FromTableName      = QUOTENAME(@Schema) + '.' + QUOTENAME(@TableName) + @TableSample;
+    SET @FromTableNameClean = QUOTENAME(@Schema) + '.' + QUOTENAME(@TableName);
 
     If DB_NAME() <> @DatabaseName
-      SET @FromTableName = QUOTENAME(@DatabaseName) + '.' + @FromTableName;
+    BEGIN
+      SET @FromTableName      = QUOTENAME(@DatabaseName) + '.' + @FromTableName;
+      SET @FromTableNameClean = QUOTENAME(@DatabaseName) + '.' + @FromTableNameClean;
+    END
 
     /* Format ColumnList  */
     DECLARE @ColumnListClean NVARCHAR(MAX);
@@ -491,7 +496,7 @@ BEGIN
                     , 1, 1, '''') ) ,
                    i.filter_definition
           FROM     ' + QUOTENAME(@DatabaseName) + '.sys.indexes       i
-          WHERE    i.object_id = OBJECT_ID(''' + @FromTableName + ''')
+          WHERE    i.object_id = OBJECT_ID(''' + @FromTableNameClean + ''')
           ORDER BY i.index_id'
     
       IF @Verbose = 1
@@ -1232,7 +1237,7 @@ BEGIN
       SELECT @SQLString = N'
         SELECT ' + @ColumnNameFirst + ' ,
                 Count = COUNT(*) ,
-                Percentage = CAST((CAST(COUNT(*)AS DECIMAL(18,4)) / ' + CAST(@RowCount AS NVARCHAR(25)) + ') * 100 AS DECIMAL(18,4))
+                Percentage = CAST(CAST(COUNT(*)AS DECIMAL(18,4)) * 100 / ' + CAST(@RowCount AS NVARCHAR(25)) + ' AS DECIMAL(18,4))
         FROM   ' + @FromTableName + '
         GROUP BY ' + @ColumnNameFirst + '
         ORDER BY 2 DESC, 1
