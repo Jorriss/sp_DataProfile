@@ -44,9 +44,10 @@ This proc is heavy on dynamic SQL. When editing:
 
 ## Testing
 
-- `tests/` holds ad-hoc verification scripts (e.g. `Checking Dates in Mode 3.sql`), run manually in SSMS against a real instance.
-- The README examples target the **StackOverflow** sample database (`Users`, `Posts`). Use it for manual verification.
-- There is no automated test runner. **Ask the user how they want a change verified** rather than assuming — capture the answer here once it's known.
+- **Automated suite: a [tSQLt](https://tsqlt.org/) harness under [tests/](tests/)** — see [tests/README.md](tests/README.md) for prereqs (CLR + tSQLt; `Ad Hoc Distributed Queries` for the Mode 3 loopback only) and [docs/test-harness-design.md](docs/test-harness-design.md) for the design. Fixtures are committed micro-tables in `DataProfileTest` (+ `DataProfileTest_Compat100`); expected values are hand-computed literals.
+- **Run it in SSMS (the user's chosen verification path):** SQLCMD mode → open [tests/run_all.sql](tests/run_all.sql) → F5 (or `sqlcmd -b -S (local) -i tests/run_all.sql`). Run `EXEC tSQLt.Run 'Smoke';` first — it proves the capture plumbing (incl. the Mode 3 loopback) before the rest. After changing the proc, re-run the suite; add/adjust a test for the new behavior.
+- Capture uses `tSQLtTest.CaptureProfile` (`tSQLt.ResultSetFilter`; loopback `OPENROWSET` for Mode 3). `@LoopbackServer` defaults to `(local)` + Windows auth — change it in [tests/install/04_capture_helper.sql](tests/install/04_capture_helper.sql) for a named instance / SQL login.
+- `tests/legacy/` keeps the original ad-hoc scripts (e.g. `Checking Dates in Mode 3.sql`) for reference. The README examples target the **StackOverflow** sample DB (`Users`, `Posts`) — used by the tagged, skip-if-absent `StackOverflowSmoke` class.
 
 ## Related docs & workflow
 
