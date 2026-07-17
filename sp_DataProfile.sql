@@ -14,43 +14,91 @@ CREATE PROCEDURE dbo.sp_DataProfile
    @ShowIndexes BIT = 0 ,
    @SampleValue INT = NULL ,
    @SampleType NVARCHAR(50) = 'PERCENT' ,
+   @ExactRowCount BIT = 0 ,
+   @ApproxDistinct BIT = 0 ,
    @Verbose BIT = 0
+/*
+sp_DataProfile v0.4 - Jul 16, 2026
+
+(C) 2026, Jorriss LLC
+Released under the MIT License. See the LICENSE file for details.
+
+Source is located at: https://github.com/Jorriss/sp_DataProfile
+
+How to use:
+Mode:
+0 = Table Overview 
+1 = Column Detail - Number Unique Values, Number Nulls, Min Len, Max Len
+2 = Column Statistics - Min, Max, Mean, Median, Standard Deviation
+3 = Candidate Key Check - You need a @ColumnList with this
+4 = Column Value Distribution - You need to provide a single column name in @ColumnList. If more than one is provided only the first one is used.
+
+You can use @ShowIndexes = 1 and @ShowForeignKeys = 1 in any mode to see all of the indexes and foreign keys.
+
+Example usage:
+Table Overview
+sp_dataprofile 'Users', 0;
+
+Table Overview with Indexes and FKs
+sp_dataprofile 'Users', 0, @ShowIndexes=1, @ShowForeignKeys=1;
+
+Column Detail
+sp_dataprofile 'Users', 1
+
+Column Statistics - Only using 10% of the table values
+sp_dataprofile 'Users', 2, @SampleValue = 10
+
+Candidate Key Check
+sp_dataprofile 'Users', 3, 'DisplayName, Location, WebsiteUrl, CreationDate'
+
+Column Value Distribution
+sp_dataprofile 'Posts', 4, 'PostTypeId'
+
+Sampling note:
+When @SampleValue is supplied, sampling is done with TABLESAMPLE, which is page-based (it
+returns all rows from a random set of pages, not a random set of rows). As a result num_rows,
+the distinct/unique counts, the null counts, and any ratio columns derived from them reflect
+the SAMPLE, not the full table. Omit @SampleValue for exact, full-table results.
+
+*/
 AS
 BEGIN
   SET NOCOUNT ON;
   SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 
-  DECLARE @SQLString NVARCHAR(4000);
-  DECLARE @SQLStringFK NVARCHAR(4000);
-  DECLARE @SQLStringIndexes NVARCHAR(4000);
+  DECLARE @SQLString NVARCHAR(MAX);
+  DECLARE @SQLStringFK NVARCHAR(MAX);
+  DECLARE @SQLStringIndexes NVARCHAR(MAX);
   DECLARE @Schema NVARCHAR(100);
-  DECLARE @DatabaseID INT;
   DECLARE @SchemaPosition INT;
   DECLARE @Msg NVARCHAR(4000);
   DECLARE @ErrorSeverity INT;
   DECLARE @ErrorState INT;
   DECLARE @RowCount BIGINT;
   DECLARE @IsSample BIT = 0;
-  DECLARE @TableSample NVARCHAR(100) = '';
-  DECLARE @FromTableName NVARCHAR(100) = '';
-  DECLARE @ColumnListString NVARCHAR(4000);
+  DECLARE @TableSample NVARCHAR(300) = '';
+  DECLARE @FromTableName NVARCHAR(300) = '';
+  DECLARE @ColumnListString NVARCHAR(MAX);
   DECLARE @ColumnNameFirst NVARCHAR(4000);
   DECLARE @SQLServerVersion NVARCHAR(100) = '';
   DECLARE @SQLCompatLevelMaster INT;
   DECLARE @SQLCompatLevelDB INT;
   DECLARE @SQLCompatLevelDBOut INT;
   DECLARE @SQLCompatLevel INT;
+  DECLARE @SQLMajorVersion INT;
   DECLARE @ViewSQLDataString NVARCHAR(4000);
 
   BEGIN TRY
 
-    /* Get that SQL Server Version son! 2005 or older up in here! */
+    /* Get that SQL Server Version son! 2012 or older up in here! */
     SELECT @SQLServerVersion = CAST(SERVERPROPERTY('ProductVersion') AS NVARCHAR(128));
 
-    IF (SELECT LEFT(@SQLServerVersion, CHARINDEX('.', @SQLServerVersion, 0) -1 )) <= 8
+    SET @SQLMajorVersion = CAST(LEFT(@SQLServerVersion, CHARINDEX('.', @SQLServerVersion, 0) - 1) AS INT);
+
+    IF @SQLMajorVersion < 11
     BEGIN
-      SET @Msg = N'I''m sorry Dave. I can''t run on your version of SQL Server. I require a SQL Server 2005 and higher. The version of this instance is: ' + @SQLServerVersion + '. I promise I won''t open the airlock.';
-      RAISERROR(@Msg, 16, 1);
+      SET @Msg = N'I''m sorry Dave. I can''t run on your version of SQL Server. I require a SQL Server 2012 and higher. The version of this instance is: ' + @SQLServerVersion + '. I promise I won''t open the airlock.';
+      RAISERROR(@msg, 16, 1);
     END
 
     IF @DatabaseName IS NULL
@@ -124,17 +172,11 @@ BEGIN
     If DB_NAME() <> @DatabaseName
       SET @FromTableName = QUOTENAME(@DatabaseName) + '.' + @FromTableName;
 
-    SELECT  @DatabaseID = database_id
-    FROM    sys.databases
-    WHERE   [name] = @DatabaseName
-    AND     user_access_desc = 'MULTI_USER'
-    AND     state_desc = 'ONLINE';
-          
     /* Format ColumnList  */
-    DECLARE @ColumnListClean NVARCHAR(4000);
-    DECLARE @ColumnListComma NVARCHAR(4000);
+    DECLARE @ColumnListClean NVARCHAR(MAX);
+    DECLARE @ColumnListComma NVARCHAR(MAX);
     DECLARE @CommaPos  INT;
-    DECLARE @CommaPart NVARCHAR(4000);
+    DECLARE @CommaPart NVARCHAR(MAX);
     
     SET @ColumnListComma = @ColumnList;
     SET @ColumnListClean = '';
@@ -161,6 +203,34 @@ BEGIN
     BEGIN
       SET @Msg = N'ColumnListstring: ' + @ColumnList
       RAISERROR (@Msg, 0, 1) WITH NOWAIT;
+    END
+
+    /* Build a column-name filter set so Mode 1 can honor @ColumnList and
+       profile only the requested columns instead of every column. When no
+       @ColumnList is supplied the set stays empty and every column is profiled. */
+    IF OBJECT_ID ('tempdb..#column_filter') IS NOT NULL
+      DROP TABLE #column_filter;
+
+    CREATE TABLE #column_filter ( col_name NVARCHAR(500) NOT NULL );
+
+    IF @ColumnList IS NOT NULL AND @ColumnList <> ''
+    BEGIN
+      DECLARE @cfRemaining NVARCHAR(MAX);
+      DECLARE @cfPos       INT;
+
+      SET @cfRemaining = @ColumnList + N',';
+      SET @cfPos = PATINDEX(N'%,%', @cfRemaining);
+
+      WHILE @cfPos <> 0
+      BEGIN
+        SET @CommaPart = LTRIM(RTRIM(LEFT(@cfRemaining, @cfPos - 1)));
+
+        IF @CommaPart <> ''
+          INSERT INTO #column_filter (col_name) VALUES (@CommaPart);
+
+        SET @cfRemaining = STUFF(@cfRemaining, 1, @cfPos, '');
+        SET @cfPos = PATINDEX(N'%,%', @cfRemaining);
+      END
     END
 
     IF OBJECT_ID ('tempdb..#table_column_profile') IS NOT NULL
@@ -269,13 +339,24 @@ BEGIN
     ) 
     EXEC sp_executesql @SQLString;
   
-    /* Update actual row count  */     
-    SET @SQLString = N'
-      UPDATE #table_column_profile  
-      SET num_rows = cnt 
-      FROM (SELECT COUNT_BIG(*) cnt 
-            FROM ' + @FromTableName + ') tablecount ;'
-    
+    /* Update actual row count.
+       Default path reads the row count from metadata (near-instant, no scan).
+       Sampling or @ExactRowCount = 1 forces a real COUNT_BIG(*) over the (sampled) table. */
+    IF @IsSample = 1 OR @ExactRowCount = 1
+      SET @SQLString = N'
+        UPDATE #table_column_profile
+        SET num_rows = cnt
+        FROM (SELECT COUNT_BIG(*) cnt
+              FROM ' + @FromTableName + ') tablecount ;'
+    ELSE
+      SET @SQLString = N'
+        UPDATE #table_column_profile
+        SET num_rows = cnt
+        FROM (SELECT SUM(ps.row_count) cnt
+              FROM ' + QUOTENAME(@DatabaseName) + '.sys.dm_db_partition_stats ps
+              WHERE ps.object_id = OBJECT_ID(''' + QUOTENAME(@DatabaseName) + '.' + QUOTENAME(@Schema) + '.' + QUOTENAME(@TableName) + ''')
+              AND   ps.index_id IN (0,1)) tablecount ;'
+
     IF @Verbose = 1
     BEGIN
       RAISERROR (N'Updating data in #table_column_profile for table row counts', 0, 1) WITH NOWAIT;
@@ -454,266 +535,286 @@ BEGIN
     END
 
     IF @Mode = 1 /* Table Detail */
-    BEGIN         
-      -- Determine unique values for each column with a valid type.
-      DECLARE @uniq_col_name NVARCHAR(500) ,
-              @uniq_col_id  INTEGER;
-      
-      DECLARE uniq_cur CURSOR
+    BEGIN
+      /* Single-pass rewrite: instead of one UPDATE (one table scan) per metric per
+         column, build ONE wide aggregate SELECT that computes every Mode 1 metric for
+         every eligible column, materialize it into a 1-row #agg (the only base-table
+         scan), then reshape that row into #table_column_profile via CROSS APPLY (VALUES).
+         Turns 100+ scans on a wide table into a single scan. */
+
+      DECLARE @m1_col_name NVARCHAR(500) ,
+              @m1_col_id   INTEGER ,
+              @m1_col_type NVARCHAR(100) ,
+              @m1_len      INTEGER ,
+              @m1_nullable BIT;
+
+      DECLARE @AggSelect NVARCHAR(MAX) = N'' ,  /* comma-separated aggregate expressions for #agg */
+              @Unpivot   NVARCHAR(MAX) = N'' ,  /* comma-separated VALUES rows for the reshape */
+              @m1_qn     NVARCHAR(300) ,
+              @m1_cid    NVARCHAR(10) ,
+              @uOK       BIT ,
+              @nOK       BIT ,
+              @lOK       BIT;
+
+      DECLARE m1_cur CURSOR
         LOCAL STATIC FORWARD_ONLY READ_ONLY FOR
-          SELECT p.name,
-                 p.column_id
+          SELECT p.name ,
+                 p.column_id ,
+                 p.system_type ,
+                 p.length ,
+                 p.is_nullable
           FROM   #table_column_profile p
-          WHERE  system_type IN ('uniqueidentifier', 'date', 'time', 'datetime2', 'datetimeoffset', 'tinyint', 'smallint', 'int', 'smalldatetime', 'real', 'money', 'datetime', 'float', 'sql_variant', 'bit', 'decimal', 'numeric', 'smallmoney' ,'bigint', 'hierarchyid', 'geometry', 'geography', 'varbinary', 'varchar', 'binary', 'char', 'timestamp', 'nvarchar', 'nchar') ;
-    
-      OPEN uniq_cur;
-      
-      FETCH NEXT FROM uniq_cur INTO @uniq_col_name, @uniq_col_id;
-  
+          /* Honor @ColumnList when supplied; profile all columns when it isn't. */
+          WHERE  (NOT EXISTS (SELECT 1 FROM #column_filter)
+                  OR p.name IN (SELECT col_name FROM #column_filter));
+
+      OPEN m1_cur;
+
+      FETCH NEXT FROM m1_cur INTO @m1_col_name, @m1_col_id, @m1_col_type, @m1_len, @m1_nullable;
+
       WHILE @@FETCH_STATUS = 0
-      BEGIN      
-        SELECT @SQLString = N'
-          UPDATE #table_column_profile 
-          SET num_unique_values = val 
-          FROM (
-            SELECT COUNT(DISTINCT ' + QUOTENAME(@uniq_col_name) + ') val 
-            FROM ' + @FromTableName + ') uniq 
-          WHERE column_id = ' + CAST(@uniq_col_id AS NVARCHAR(10)) 
-      
+      BEGIN
+        SET @m1_qn  = QUOTENAME(@m1_col_name);
+        SET @m1_cid = CAST(@m1_col_id AS NVARCHAR(10));
+
+        /* num_unique_values: valid types only, skipping LOB (max) where COUNT(DISTINCT) is expensive. */
+        SET @uOK = CASE WHEN @m1_col_type IN ('uniqueidentifier', 'date', 'time', 'datetime2', 'datetimeoffset', 'tinyint', 'smallint', 'int', 'smalldatetime', 'real', 'money', 'datetime', 'float', 'sql_variant', 'bit', 'decimal', 'numeric', 'smallmoney', 'bigint', 'varbinary', 'varchar', 'binary', 'char', 'timestamp', 'nvarchar', 'nchar')
+                        AND NOT (@m1_col_type IN ('nvarchar', 'varchar', 'varbinary') AND @m1_len = -1)
+                        THEN 1 ELSE 0 END;
+        /* num_nulls: nullable columns of any type. */
+        SET @nOK = @m1_nullable;
+        /* min/max length: string types only. */
+        SET @lOK = CASE WHEN @m1_col_type IN ('varchar', 'char', 'nvarchar', 'nchar') THEN 1 ELSE 0 END;
+
+        IF @uOK = 1 OR @nOK = 1 OR @lOK = 1
+        BEGIN
+          IF @uOK = 1
+            SET @AggSelect = @AggSelect + CASE WHEN @AggSelect <> N'' THEN N', ' ELSE N'' END
+              + N'CAST(' + CASE WHEN @ApproxDistinct = 1 AND @SQLMajorVersion >= 15
+                                THEN N'APPROX_COUNT_DISTINCT(' + @m1_qn + N')'
+                                ELSE N'COUNT(DISTINCT ' + @m1_qn + N')' END
+              + N' AS BIGINT) AS u' + @m1_cid;
+
+          IF @nOK = 1
+            SET @AggSelect = @AggSelect + CASE WHEN @AggSelect <> N'' THEN N', ' ELSE N'' END
+              + N'CAST(COUNT_BIG(CASE WHEN ' + @m1_qn + N' IS NULL THEN 1 END) AS BIGINT) AS n' + @m1_cid;
+
+          IF @lOK = 1
+            SET @AggSelect = @AggSelect + CASE WHEN @AggSelect <> N'' THEN N', ' ELSE N'' END
+              + N'CAST(MIN(LEN(' + @m1_qn + N')) AS INT) AS mnl' + @m1_cid
+              + N', CAST(MAX(LEN(' + @m1_qn + N')) AS INT) AS mxl' + @m1_cid;
+
+          /* Matching VALUES row. Typed NULLs (never bare NULL) keep the unpivoted
+             columns single-typed regardless of which metrics a column qualifies for. */
+          SET @Unpivot = @Unpivot + CASE WHEN @Unpivot <> N'' THEN N',
+            ' ELSE N'' END
+            + N'(' + @m1_cid + N', '
+            + CASE WHEN @uOK = 1 THEN N'a.u'   + @m1_cid ELSE N'CAST(NULL AS BIGINT)' END + N', '
+            + CASE WHEN @nOK = 1 THEN N'a.n'   + @m1_cid ELSE N'CAST(NULL AS BIGINT)' END + N', '
+            + CASE WHEN @lOK = 1 THEN N'a.mnl' + @m1_cid ELSE N'CAST(NULL AS INT)'    END + N', '
+            + CASE WHEN @lOK = 1 THEN N'a.mxl' + @m1_cid ELSE N'CAST(NULL AS INT)'    END + N')';
+        END
+
+        FETCH NEXT FROM m1_cur INTO @m1_col_name, @m1_col_id, @m1_col_type, @m1_len, @m1_nullable;
+      END
+
+      CLOSE m1_cur;
+      DEALLOCATE m1_cur;
+
+      /* Skip entirely when no column qualified for any metric (e.g. @ColumnList
+         names only excluded columns) — an empty select list would be a syntax error. */
+      IF @AggSelect <> N''
+      BEGIN
+        SET @SQLString = N'
+          IF OBJECT_ID(''tempdb..#agg'') IS NOT NULL DROP TABLE #agg;
+
+          SELECT ' + @AggSelect + N'
+          INTO #agg
+          FROM ' + @FromTableName + N';
+
+          UPDATE p
+          SET num_unique_values = v.uniq ,
+              num_nulls         = v.nulls ,
+              min_length        = v.minlen ,
+              max_length        = v.maxlen
+          FROM #table_column_profile p
+          JOIN #agg a ON 1 = 1
+          CROSS APPLY (VALUES
+            ' + @Unpivot + N'
+          ) v(column_id, uniq, nulls, minlen, maxlen)
+          WHERE v.column_id = p.column_id;';
+
         IF @Verbose = 1
         BEGIN
-          RAISERROR (N'Determine unique values for each column with a valid type.', 0, 1) WITH NOWAIT;
+          RAISERROR (N'Single-pass column detail: one scan for all metrics.', 0, 1) WITH NOWAIT;
           RAISERROR (@SQLString, 0, 1) WITH NOWAIT;
         END
 
-        IF @SQLString IS NULL 
+        IF @SQLString IS NULL
           RAISERROR('@SQLString is null', 16, 1);
-  
+
         EXECUTE sp_executesql @SQLString;
-    
-        FETCH NEXT FROM uniq_cur INTO @uniq_col_name, @uniq_col_id;
       END
-        
-      -- Determine null values for each column   
-      DECLARE @null_col_name NVARCHAR(500) ,
-              @null_col_num  INTEGER;
-    
-      DECLARE null_cur CURSOR
-        LOCAL STATIC FORWARD_ONLY READ_ONLY FOR
-          SELECT p.name,
-                 p.column_id
-          FROM   #table_column_profile p
-          WHERE  p.is_nullable = 1;
-    
-      OPEN null_cur;
-      
-      FETCH NEXT FROM null_cur INTO @null_col_name, @null_col_num;
-      
-      WHILE @@FETCH_STATUS = 0
-      BEGIN
-    
-        SELECT @SQLString = 
-          N'UPDATE #table_column_profile ' +
-           'SET num_nulls = val ' + 
-           'FROM (' +
-           '  SELECT COUNT(*) val ' +
-           '  FROM ' + @FromTableName + ' ' +
-           '  WHERE ' + QUOTENAME(@null_col_name) + ' IS NULL ' +
-           ') uniq ' +
-           'WHERE column_id = ' + CAST(@null_col_num AS NVARCHAR(10))
 
-        IF @Verbose = 1
-        BEGIN
-          RAISERROR (N'Updating data in #table_column_profile for column null row counts.', 0, 1) WITH NOWAIT;
-          RAISERROR (@SQLString, 0, 1) WITH NOWAIT;
-        END
-    
-        IF @SQLString IS NULL 
-          RAISERROR('@SQLString is null', 16, 1);
-    
-        EXECUTE sp_executesql @SQLString;
-        
-        FETCH NEXT FROM null_cur INTO @null_col_name, @null_col_num;
-      END
-      
-      CLOSE null_cur;
-      DEALLOCATE null_cur;
-    
-      /* Determine min/max length values */
-      DECLARE @len_col_name NVARCHAR(500) ,
-              @len_col_num  INTEGER;
-    
-      DECLARE len_cur CURSOR
-  
-       LOCAL STATIC FORWARD_ONLY READ_ONLY FOR
-          SELECT p.name,
-                 p.column_id
-          FROM   #table_column_profile p
-          WHERE  p.system_type IN ('varchar', 'char', 'nvarchar', 'nchar');
-    
-      OPEN len_cur;
-      
-      FETCH NEXT FROM len_cur INTO @len_col_name, @len_col_num;
-      
-      WHILE @@FETCH_STATUS = 0
-      BEGIN
-        SELECT @SQLString = 
-          N'UPDATE #table_column_profile ' +
-           'SET max_length = val ' + 
-           'FROM (' +
-           '  SELECT MAX(LEN(' + QUOTENAME(@len_col_name) + ')) val ' +
-           '  FROM ' + @FromTableName + ' ' +
-           ') uniq ' +
-           'WHERE column_id = ' + CAST(@len_col_num AS NVARCHAR(10));
-    
-        IF @Verbose = 1
-        BEGIN
-          RAISERROR (N'Updating data in #table_column_profile for column max length', 0, 1) WITH NOWAIT;
-          RAISERROR (@SQLString, 0, 1) WITH NOWAIT;;
-        END
-
-        IF @SQLString IS NULL 
-          RAISERROR('@SQLString is null', 16, 1);
-    
-        EXECUTE sp_executesql @SQLString;
-      
-        SELECT @SQLString = 
-          N'UPDATE #table_column_profile ' +
-           'SET min_length = val ' + 
-           'FROM (' +
-           '  SELECT MIN(LEN(' + QUOTENAME(@len_col_name) + ')) val ' +
-           '  FROM ' + @FromTableName + ' ' +
-           ') uniq ' +
-           'WHERE column_id = ' + CAST(@len_col_num AS NVARCHAR(10));
-
-        IF @Verbose = 1
-        BEGIN
-          RAISERROR (N'Updating data in #table_column_profile for column min length', 0, 1) WITH NOWAIT;
-          RAISERROR (@SQLString, 0, 1) WITH NOWAIT;;
-        END
-    
-        IF @SQLString IS NULL 
-          RAISERROR('@SQLString is null', 16, 1);
-
-        EXECUTE sp_executesql @SQLString;
-
-        FETCH NEXT FROM len_cur INTO @len_col_name, @len_col_num;
-      END
-      
-      CLOSE len_cur;
-      DEALLOCATE len_cur; 
-  
     END /* Table Detail */
   
     IF @Mode = 2 /* Column Statistics */
     BEGIN
-  
+      /* Single-pass rewrite (mirrors Mode 1): instead of one UPDATE (one table scan)
+         per metric per column, walk the columns once to build TWO wide aggregate
+         SELECTs, then materialize each into a 1-row temp table and reshape via
+         CROSS APPLY (VALUES). Batch A (#agg) computes min/max for every non-bit type
+         plus mean/std_dev for numeric types in ONE scan. Batch B (#median) computes
+         every numeric column's median in ONE scan (PERCENTILE_DISC is a window
+         function, so it can't share Batch A's scalar-aggregate scan). Result: 2 scans
+         total instead of ~2 per numeric column. */
+
       /* Determine Column Statistics */
       IF @Verbose = 1
         RAISERROR (N'Updating data in #table_column_profile for column statistics', 0, 1) WITH NOWAIT;
-     
+
       DECLARE @stats_col_name NVARCHAR(500) ,
               @stats_col_num  INTEGER ,
               @stats_col_type NVARCHAR(50);
-    
+
+      DECLARE @StatSelect   NVARCHAR(MAX) = N'' ,  /* aggregate expressions for #agg     */
+              @StatUnpivot  NVARCHAR(MAX) = N'' ,  /* VALUES rows for the min/max/mean/sd reshape */
+              @MedSelect    NVARCHAR(MAX) = N'' ,  /* PERCENTILE_DISC expressions for #median */
+              @MedUnpivot   NVARCHAR(MAX) = N'' ,  /* VALUES rows for the median reshape  */
+              @s2_qn        NVARCHAR(300) ,
+              @s2_cid       NVARCHAR(10) ,
+              @s2_castcol   NVARCHAR(320) ,
+              @s2_isnum     BIT;
+
       DECLARE stats_cur CURSOR LOCAL STATIC FORWARD_ONLY READ_ONLY FOR
       SELECT p.name,
              p.column_id,
              p.system_type
       FROM   #table_column_profile p
-      WHERE  p.system_type IN ('bigint', 'bit', 'decimal', 'int', 'money', 'numeric', 'smallint', 'smallmoney', 'tinyint', 'float', 'real', 'date', 'datetime2', 'datetime', 'datetimeoffset', 'smalldatetime', 'time');
-    
+      /* bit is in the profiled-types set historically but never produced a stat, so
+         it is excluded here — the loop only ever built min/max for non-bit types. */
+      WHERE  p.system_type IN ('bigint', 'decimal', 'int', 'money', 'numeric', 'smallint', 'smallmoney', 'tinyint', 'float', 'real', 'date', 'datetime2', 'datetime', 'datetimeoffset', 'smalldatetime', 'time');
+
       OPEN stats_cur;
-      
+
       FETCH NEXT FROM stats_cur INTO @stats_col_name, @stats_col_num, @stats_col_type;
-      
+
       WHILE @@FETCH_STATUS = 0
       BEGIN
-        SELECT @SQLString = N'  
-          UPDATE #table_column_profile 
-          SET max_value = max_val ,
-              min_value = min_val 
-          FROM (
-            SELECT CAST(MAX(' + QUOTENAME(@stats_col_name) + ') AS NVARCHAR(100)) max_val  ,
-                   CAST(MIN(' + QUOTENAME(@stats_col_name) + ') AS NVARCHAR(100)) min_val  
-            FROM ' + @FromTableName + ' 
-           ) stats 
-          WHERE column_id = ' + CAST(@stats_col_num AS NVARCHAR(10))
+        SET @s2_qn  = QUOTENAME(@stats_col_name);
+        SET @s2_cid = CAST(@stats_col_num AS NVARCHAR(10));
 
-        IF @Verbose = 1
+        SET @s2_isnum =
+          CASE WHEN @stats_col_type IN ('bigint', 'decimal', 'int', 'money', 'numeric', 'smallint', 'smallmoney', 'tinyint', 'float', 'real')
+               THEN 1 ELSE 0 END;
+
+        /* AVG on int can overflow int; widen to bigint. Only 'int' needs this
+           (AVG of smallint/tinyint already returns int, bigint returns bigint). */
+        SET @s2_castcol = CASE WHEN @stats_col_type = 'int'
+                               THEN N'CAST(' + @s2_qn + N' AS BIGINT)'
+                               ELSE @s2_qn END;
+
+        /* Batch A: min/max for every column; mean/std_dev for numerics only. */
+        SET @StatSelect = @StatSelect + CASE WHEN @StatSelect <> N'' THEN N', ' ELSE N'' END
+          + N'CAST(MIN(' + @s2_qn + N') AS NVARCHAR(100)) AS mn' + @s2_cid
+          + N', CAST(MAX(' + @s2_qn + N') AS NVARCHAR(100)) AS mx' + @s2_cid
+          + CASE WHEN @s2_isnum = 1 THEN
+              N', CAST(AVG(' + @s2_castcol + N') AS NVARCHAR(100)) AS av' + @s2_cid
+            + N', CAST(CAST(STDEV(' + @s2_qn + N') AS NUMERIC(18,4)) AS NVARCHAR(100)) AS sd' + @s2_cid
+            ELSE N'' END;
+
+        /* Matching VALUES row. Typed NULLs (never bare NULL) keep the unpivoted
+           columns single-typed regardless of whether a column is numeric. */
+        SET @StatUnpivot = @StatUnpivot + CASE WHEN @StatUnpivot <> N'' THEN N',
+            ' ELSE N'' END
+          + N'(' + @s2_cid + N', a.mn' + @s2_cid + N', a.mx' + @s2_cid + N', '
+          + CASE WHEN @s2_isnum = 1 THEN N'a.av' + @s2_cid ELSE N'CAST(NULL AS NVARCHAR(100))' END + N', '
+          + CASE WHEN @s2_isnum = 1 THEN N'a.sd' + @s2_cid ELSE N'CAST(NULL AS NVARCHAR(100))' END + N')';
+
+        /* Batch B: median, numeric columns only, and only where PERCENTILE_DISC is
+           supported (compat level 110+ — matching the prior per-column gate). */
+        IF @s2_isnum = 1 AND @SQLCompatLevel >= 110
         BEGIN
-          RAISERROR (N'Updating data in #table_column_profile for column max length', 0, 1) WITH NOWAIT;
-          RAISERROR (@SQLString, 0, 1) WITH NOWAIT;;
+          SET @MedSelect = @MedSelect + CASE WHEN @MedSelect <> N'' THEN N', ' ELSE N'' END
+            + N'CAST(PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY ' + @s2_qn + N') OVER () AS NVARCHAR(100)) AS md' + @s2_cid;
+
+          SET @MedUnpivot = @MedUnpivot + CASE WHEN @MedUnpivot <> N'' THEN N',
+            ' ELSE N'' END
+            + N'(' + @s2_cid + N', a.md' + @s2_cid + N')';
         END
-  
-        IF @SQLString IS NULL
-          RAISERROR('@SQLString is null', 16, 1);
-  
-        IF @stats_col_type != 'bit'
-          EXECUTE sp_executesql @SQLString;
-  
-        /* Update mean, standard deviation */
-        DECLARE @col_name NVARCHAR(100) = QUOTENAME(@stats_col_name);
-      
-        IF @stats_col_type = 'int'
-          SET @col_name = 'CAST(' + QUOTENAME(@stats_col_name) + ' AS BIGINT)';
-  
-        SELECT @SQLString = N'
-          UPDATE #table_column_profile 
-          SET mean = mean_val ,
-              std_dev = std_dev_val
-          FROM (
-            SELECT mean_val = CAST(AVG(' + @col_name + ') AS NVARCHAR(100)) ,
-                   std_dev_val = CAST(CAST(STDEV(' + QUOTENAME(@stats_col_name) + ') AS NUMERIC(18,4)) AS NVARCHAR(100)) 
-            FROM ' + @FromTableName + ' 
-          ) stats WHERE column_id = ' + CAST(@stats_col_num AS NVARCHAR(10))
 
-        IF @Verbose = 1
-        BEGIN
-          RAISERROR (N'Update mean, standard deviation', 0, 1) WITH NOWAIT;
-          RAISERROR (@SQLString, 0, 1) WITH NOWAIT;;
-        END
-        
-        IF @SQLString IS NULL
-          RAISERROR('@SQLString is null', 16, 1);
-  
-        IF @stats_col_type IN ('bigint', 'decimal', 'int', 'money', 'numeric', 'smallint', 'smallmoney', 'tinyint', 'float', 'real')
-          EXECUTE sp_executesql @SQLString;
-       
-        /* Update median */
-        IF @SQLCompatLevel >= 110
-        BEGIN
-        
-          SELECT @SQLString = N'
-            UPDATE #table_column_profile 
-            SET median = median_val
-            FROM (
-              SELECT DISTINCT median_val = PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY ' + @stats_col_name + ') OVER ()
-              FROM ' + @FromTableName + ' 
-            ) stats 
-            WHERE column_id = ' + CAST(@stats_col_num AS NVARCHAR(10))
-
-          IF @Verbose = 1
-          BEGIN
-            RAISERROR (N'Update median', 0, 1) WITH NOWAIT;
-            RAISERROR (@SQLString, 0, 1) WITH NOWAIT;;
-          END
-  
-          IF @SQLString IS NULL
-            RAISERROR('@SQLString is null', 16, 1);
-  
-          IF @stats_col_type IN ('bigint', 'decimal', 'int', 'money', 'numeric', 'smallint', 'smallmoney', 'tinyint', 'float', 'real')
-            EXECUTE sp_executesql @SQLString;
-       
-        END /* End Median Update */
-  
         FETCH NEXT FROM stats_cur INTO @stats_col_name, @stats_col_num, @stats_col_type;
-    
       END /* Column Statistics Loop */
-      
+
       CLOSE stats_cur;
-      DEALLOCATE stats_cur; 
-  
+      DEALLOCATE stats_cur;
+
+      /* Batch A — min/max/mean/std_dev in one scan. */
+      IF @StatSelect <> N''
+      BEGIN
+        SET @SQLString = N'
+          IF OBJECT_ID(''tempdb..#agg'') IS NOT NULL DROP TABLE #agg;
+
+          SELECT ' + @StatSelect + N'
+          INTO #agg
+          FROM ' + @FromTableName + N';
+
+          UPDATE p
+          SET min_value = v.minv ,
+              max_value = v.maxv ,
+              mean      = v.meanv ,
+              std_dev   = v.sdv
+          FROM #table_column_profile p
+          JOIN #agg a ON 1 = 1
+          CROSS APPLY (VALUES
+            ' + @StatUnpivot + N'
+          ) v(column_id, minv, maxv, meanv, sdv)
+          WHERE v.column_id = p.column_id;';
+
+        IF @Verbose = 1
+        BEGIN
+          RAISERROR (N'Single-pass column statistics: one scan for min/max/mean/std_dev.', 0, 1) WITH NOWAIT;
+          RAISERROR (@SQLString, 0, 1) WITH NOWAIT;
+        END
+
+        IF @SQLString IS NULL
+          RAISERROR('@SQLString is null', 16, 1);
+
+        EXECUTE sp_executesql @SQLString;
+      END
+
+      /* Batch B — all medians in one scan (guard already implies compat 110+ and
+         at least one numeric column). */
+      IF @MedSelect <> N''
+      BEGIN
+        SET @SQLString = N'
+          IF OBJECT_ID(''tempdb..#median'') IS NOT NULL DROP TABLE #median;
+
+          SELECT DISTINCT ' + @MedSelect + N'
+          INTO #median
+          FROM ' + @FromTableName + N';
+
+          UPDATE p
+          SET median = v.med
+          FROM #table_column_profile p
+          JOIN #median a ON 1 = 1
+          CROSS APPLY (VALUES
+            ' + @MedUnpivot + N'
+          ) v(column_id, med)
+          WHERE v.column_id = p.column_id;';
+
+        IF @Verbose = 1
+        BEGIN
+          RAISERROR (N'Single-pass medians: one scan for all median columns.', 0, 1) WITH NOWAIT;
+          RAISERROR (@SQLString, 0, 1) WITH NOWAIT;
+        END
+
+        IF @SQLString IS NULL
+          RAISERROR('@SQLString is null', 16, 1);
+
+        EXECUTE sp_executesql @SQLString;
+      END
+
     END /* 2 - Column Statistics */
 
     IF @Mode = 3 /* 3 - Candidate Key Check */
@@ -736,10 +837,11 @@ BEGIN
       SET @SQLString = N'
         SELECT c.name ,
                type = TYPE_NAME(c.system_type_id)
-        FROM   sys.tables t
-        JOIN   sys.columns c ON  c.object_id = t.object_id
+        FROM   ' + QUOTENAME(@DatabaseName) + '.sys.tables  t
+        JOIN   ' + QUOTENAME(@DatabaseName) + '.sys.columns c ON  c.object_id = t.object_id
+        JOIN   ' + QUOTENAME(@DatabaseName) + '.sys.schemas s ON  t.schema_id = s.schema_id
+                                                             AND s.name = ''' + @Schema + '''
         WHERE  t.name = ''' + @TableName + '''
-        AND    t.schema_id = SCHEMA_ID(''' + @Schema + ''')
         AND    c.name IN (' + @ColumnListString + ');'
 
       IF @Verbose = 1
@@ -830,8 +932,10 @@ BEGIN
       
       SELECT @SQLString = N'
         INSERT INTO #table_distinct_count (column_count)
-        SELECT COUNT(DISTINCT ' + QUOTENAME(@ColumnNameFirst) + ') val 
-        FROM ' + @FromTableName + ' 
+        SELECT ' + CASE WHEN @ApproxDistinct = 1 AND @SQLMajorVersion >= 15
+                        THEN 'APPROX_COUNT_DISTINCT(' + QUOTENAME(@ColumnNameFirst) + ')'
+                        ELSE 'COUNT(DISTINCT ' + QUOTENAME(@ColumnNameFirst) + ')' END + ' val
+        FROM ' + @FromTableName + '
       ';
 
       IF @Verbose = 1
@@ -939,7 +1043,11 @@ BEGIN
                [nulls_ratio] ,
                [min_length] ,
                [max_length]
-      FROM #table_column_profile;
+      FROM #table_column_profile
+      /* Honor @ColumnList when supplied; display all columns when it isn't. */
+      WHERE (NOT EXISTS (SELECT 1 FROM #column_filter)
+             OR [name] IN (SELECT col_name FROM #column_filter))
+      ORDER BY [column_id];
 
       IF @ShowForeignKeys = 1
       BEGIN
