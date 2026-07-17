@@ -16,33 +16,33 @@ Decisions:
 
 All in `sp_DataProfile.sql`.
 
-1. **Dynamic-SQL variables → `NVARCHAR(MAX)`.** Change `@SQLString`, `@SQLStringFK`, `@SQLStringIndexes` (lines 61-63) from `NVARCHAR(4000)` to `NVARCHAR(MAX)`. Also review `@ColumnList`-derived buffers (`@ColumnListClean`, `@ColumnListComma`, `@ColumnListString`, lines 172-196) — widen to `NVARCHAR(MAX)` to prevent truncation on wide tables. Prevents silent truncation of the index `FOR XML` query (lines 416-452) and the candidate-key `GROUP BY` string.
+1. ✅ **Done.** **Dynamic-SQL variables → `NVARCHAR(MAX)`.** `@SQLString`, `@SQLStringFK`, `@SQLStringIndexes` and the `@ColumnList`-derived buffers (`@ColumnListClean`, `@ColumnListComma`, `@ColumnListString`) are now `NVARCHAR(MAX)`. Prevents silent truncation of the index `FOR XML` query and the candidate-key `GROUP BY` string.
 
-2. **Close/deallocate `uniq_cur`.** Add `CLOSE uniq_cur; DEALLOCATE uniq_cur;` after the unique-values loop ends (after line 533, before the null-cursor block), matching the other three cursors.
+2. ✅ **Done (superseded).** **Close/deallocate `uniq_cur`.** The old unique-values cursor was removed by the Phase 3 Mode 1 single-pass rewrite; its replacement (`m1_cur`) is properly closed and deallocated.
 
-3. **Quote the median ORDER BY column.** Line 729 uses raw `@stats_col_name`; change to `QUOTENAME(@stats_col_name)` to match min/max/mean and support odd/reserved names.
+3. ✅ **Done.** **Quote the median ORDER BY column.** The median `ORDER BY` now uses `QUOTENAME(@stats_col_name)`, matching min/max/mean and supporting odd/reserved names.
 
-4. **Make Mode 3 metadata query cross-database.** Lines 774-781 query bare `sys.tables`/`sys.columns` and `SCHEMA_ID()` (current DB only). Qualify with `QUOTENAME(@DatabaseName)` and resolve the schema id in-context, matching every other metadata query in the proc.
+4. ✅ **Done.** **Make Mode 3 metadata query cross-database.** The Mode 3 metadata query is now qualified with `QUOTENAME(@DatabaseName)` and joins `sys.schemas` in-context, matching every other metadata query in the proc.
 
-5. **Remove dead code.** Delete the unused `@DatabaseID` declaration and its populating `SELECT` (line 65 decl + lines 165-169), unless we choose to use `database_id` in Phase 2's metadata row count (see below) — in that case keep and reuse it.
+5. ✅ **Done.** **Remove dead code.** The unused `@DatabaseID` declaration and its populating `SELECT` were deleted (Phase 2's metadata row count uses `OBJECT_ID(...)`, not `database_id`).
 
-6. **Document sampling semantics.** Add a header comment noting that with `@SampleValue` set, `num_rows`, distinct counts, and the ratio computed columns reflect the **sample**, not the full table (`TABLESAMPLE` is page-based). No logic change.
+6. ✅ **Done.** **Document sampling semantics.** A header comment now notes that with `@SampleValue` set, `num_rows`, distinct counts, and the ratio computed columns reflect the **sample**, not the full table.
 
 ## Phase 2 — Safe performance wins (keeps existing structure)
 
-7. **Metadata-based row count for the overview.** Replace the full `COUNT_BIG(*)` scan (lines 311-315) with `SUM(row_count)` from `sys.dm_db_partition_stats` where `index_id IN (0,1)`, qualified by database. Add an `@ExactRowCount BIT = 0` parameter that falls back to the current exact scan when set, and always use the exact scan when `@IsSample = 1` (sampling needs a real count).
+7. ✅ **Done.** **Metadata-based row count for the overview.** The default path reads `SUM(row_count)` from `sys.dm_db_partition_stats` (`index_id IN (0,1)`), qualified by database. The new `@ExactRowCount BIT = 0` parameter forces the exact `COUNT_BIG(*)` scan, which is also always used when `@IsSample = 1`.
 
-8. **Combine per-column stat scans in Mode 2.** In the stats cursor (lines 668-750), merge the separate min/max query and the mean/stddev query into a single `SELECT` per column (four aggregates, one scan). Median (`PERCENTILE_DISC`) stays separate — it can't cheaply share the scan. Reduces Mode 2 from ~3 scans/column to ~2.
+8. ✅ **Done.** **Combine per-column stat scans in Mode 2.** The stats cursor merges min/max/mean/stddev into a single `SELECT` per column (one scan). Median (`PERCENTILE_DISC`) stays separate.
 
-9. **Version-adaptive distinct counts.** Add a parsed major-version integer (from `@SQLServerVersion`, reusing the parse at line 88). Where the proc runs `COUNT(DISTINCT col)` (Mode 1 unique loop lines 513-519; Mode 4 distinct count lines 869-873), emit `APPROX_COUNT_DISTINCT(col)` when major version >= 15 (SQL 2019) **and** exactness isn't required, else keep `COUNT(DISTINCT)`. Gate behind a new `@ApproxDistinct BIT = 0` (opt-in) so default behavior is unchanged.
+9. ✅ **Done.** **Version-adaptive distinct counts.** `@SQLMajorVersion` is parsed once from `@SQLServerVersion`. Mode 1 (single-pass agg) and Mode 4 emit `APPROX_COUNT_DISTINCT(col)` when major version >= 15 (SQL 2019), gated behind the opt-in `@ApproxDistinct BIT = 0` so default behavior is unchanged.
 
-10. **Skip distinct on LOB/CLR types.** Extend the type filter feeding the unique cursor (line 505) to exclude `nvarchar(max)`/`varchar(max)`/`varbinary(max)`/`xml`/`geography`/`geometry`/`hierarchyid` — `COUNT(DISTINCT)` on these is expensive and rarely meaningful. (`max` detection via `length = -1`.)
+10. ✅ **Done.** **Skip distinct on LOB/CLR types.** Mode 1's distinct-eligibility check excludes `nvarchar(max)`/`varchar(max)`/`varbinary(max)` (via `length = -1`); `xml`/`geography`/`geometry`/`hierarchyid` are not in the valid-type list at all.
 
 ## Phase 3 — Single-pass rewrite
 
 **Mode 1 — done.** The three per-metric cursors were replaced with one code-gen cursor that builds a single wide `SELECT ... INTO #agg` (per-column `COUNT(DISTINCT)`/`SUM(CASE WHEN col IS NULL...)`, `MIN/MAX(LEN(col))`) — the only base-table scan — then reshapes that 1-row `#agg` into `#table_column_profile` with one `UPDATE ... CROSS APPLY (VALUES ...)`. Turns 100+ scans into 1. This raised the compatibility floor to SQL Server 2012 (needed for the `VALUES` reshape). An empty-select guard skips the whole block when no column qualifies.
 
-**Mode 2 — still deferred.** Collapse Mode 2's non-median stats into one `SELECT ... INTO #agg` the same way (min/max/mean/stddev, one scan) and combine all medians into a single second scan (`PERCENTILE_DISC ... OVER ()` per column, aggregated to one row — window functions can't share the scalar-aggregate scan, so median stays a separate pass). Mode 2 lands at 2 scans total instead of ~2 per numeric column.
+**Mode 2 — done.** The per-column stats cursor now only accumulates strings, then runs two dynamic batches: Batch A builds one wide `SELECT ... INTO #agg` (min/max for every non-bit type, mean/stddev for numerics) — one scan — and reshapes it into `#table_column_profile` with a single `UPDATE ... CROSS APPLY (VALUES ...)`; Batch B builds one `SELECT DISTINCT ... INTO #median` of every numeric column's `PERCENTILE_DISC(...) OVER ()` — a second scan (window functions can't share the scalar-aggregate scan) — reshaped the same way. Median stays gated on compat level 110+. Mode 2 lands at 2 scans total instead of ~2 per numeric column. Empty-select guards skip either batch when no column qualifies.
 
 ---
 

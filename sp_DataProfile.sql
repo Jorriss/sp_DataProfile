@@ -70,7 +70,6 @@ BEGIN
   DECLARE @SQLStringFK NVARCHAR(MAX);
   DECLARE @SQLStringIndexes NVARCHAR(MAX);
   DECLARE @Schema NVARCHAR(100);
-  DECLARE @DatabaseID INT;
   DECLARE @SchemaPosition INT;
   DECLARE @Msg NVARCHAR(4000);
   DECLARE @ErrorSeverity INT;
@@ -173,12 +172,6 @@ BEGIN
     If DB_NAME() <> @DatabaseName
       SET @FromTableName = QUOTENAME(@DatabaseName) + '.' + @FromTableName;
 
-    SELECT  @DatabaseID = database_id
-    FROM    sys.databases
-    WHERE   [name] = @DatabaseName
-    AND     user_access_desc = 'MULTI_USER'
-    AND     state_desc = 'ONLINE';
-          
     /* Format ColumnList  */
     DECLARE @ColumnListClean NVARCHAR(MAX);
     DECLARE @ColumnListComma NVARCHAR(MAX);
@@ -667,105 +660,161 @@ BEGIN
   
     IF @Mode = 2 /* Column Statistics */
     BEGIN
-  
+      /* Single-pass rewrite (mirrors Mode 1): instead of one UPDATE (one table scan)
+         per metric per column, walk the columns once to build TWO wide aggregate
+         SELECTs, then materialize each into a 1-row temp table and reshape via
+         CROSS APPLY (VALUES). Batch A (#agg) computes min/max for every non-bit type
+         plus mean/std_dev for numeric types in ONE scan. Batch B (#median) computes
+         every numeric column's median in ONE scan (PERCENTILE_DISC is a window
+         function, so it can't share Batch A's scalar-aggregate scan). Result: 2 scans
+         total instead of ~2 per numeric column. */
+
       /* Determine Column Statistics */
       IF @Verbose = 1
         RAISERROR (N'Updating data in #table_column_profile for column statistics', 0, 1) WITH NOWAIT;
-     
+
       DECLARE @stats_col_name NVARCHAR(500) ,
               @stats_col_num  INTEGER ,
               @stats_col_type NVARCHAR(50);
-    
+
+      DECLARE @StatSelect   NVARCHAR(MAX) = N'' ,  /* aggregate expressions for #agg     */
+              @StatUnpivot  NVARCHAR(MAX) = N'' ,  /* VALUES rows for the min/max/mean/sd reshape */
+              @MedSelect    NVARCHAR(MAX) = N'' ,  /* PERCENTILE_DISC expressions for #median */
+              @MedUnpivot   NVARCHAR(MAX) = N'' ,  /* VALUES rows for the median reshape  */
+              @s2_qn        NVARCHAR(300) ,
+              @s2_cid       NVARCHAR(10) ,
+              @s2_castcol   NVARCHAR(320) ,
+              @s2_isnum     BIT;
+
       DECLARE stats_cur CURSOR LOCAL STATIC FORWARD_ONLY READ_ONLY FOR
       SELECT p.name,
              p.column_id,
              p.system_type
       FROM   #table_column_profile p
-      WHERE  p.system_type IN ('bigint', 'bit', 'decimal', 'int', 'money', 'numeric', 'smallint', 'smallmoney', 'tinyint', 'float', 'real', 'date', 'datetime2', 'datetime', 'datetimeoffset', 'smalldatetime', 'time');
-    
+      /* bit is in the profiled-types set historically but never produced a stat, so
+         it is excluded here — the loop only ever built min/max for non-bit types. */
+      WHERE  p.system_type IN ('bigint', 'decimal', 'int', 'money', 'numeric', 'smallint', 'smallmoney', 'tinyint', 'float', 'real', 'date', 'datetime2', 'datetime', 'datetimeoffset', 'smalldatetime', 'time');
+
       OPEN stats_cur;
-      
+
       FETCH NEXT FROM stats_cur INTO @stats_col_name, @stats_col_num, @stats_col_type;
-      
+
       WHILE @@FETCH_STATUS = 0
       BEGIN
-        /* Combined single-scan stats: MAX/MIN for every non-bit type, plus
-           AVG/STDEV for numeric types, computed in one pass over the table.
-           (bit is skipped entirely, matching the prior behavior.) */
-        DECLARE @col_name NVARCHAR(100) = QUOTENAME(@stats_col_name);
+        SET @s2_qn  = QUOTENAME(@stats_col_name);
+        SET @s2_cid = CAST(@stats_col_num AS NVARCHAR(10));
 
-        IF @stats_col_type = 'int'
-          SET @col_name = 'CAST(' + QUOTENAME(@stats_col_name) + ' AS BIGINT)';
-
-        DECLARE @IsNumericStat BIT =
+        SET @s2_isnum =
           CASE WHEN @stats_col_type IN ('bigint', 'decimal', 'int', 'money', 'numeric', 'smallint', 'smallmoney', 'tinyint', 'float', 'real')
                THEN 1 ELSE 0 END;
 
-        IF @stats_col_type != 'bit'
+        /* AVG on int can overflow int; widen to bigint. Only 'int' needs this
+           (AVG of smallint/tinyint already returns int, bigint returns bigint). */
+        SET @s2_castcol = CASE WHEN @stats_col_type = 'int'
+                               THEN N'CAST(' + @s2_qn + N' AS BIGINT)'
+                               ELSE @s2_qn END;
+
+        /* Batch A: min/max for every column; mean/std_dev for numerics only. */
+        SET @StatSelect = @StatSelect + CASE WHEN @StatSelect <> N'' THEN N', ' ELSE N'' END
+          + N'CAST(MIN(' + @s2_qn + N') AS NVARCHAR(100)) AS mn' + @s2_cid
+          + N', CAST(MAX(' + @s2_qn + N') AS NVARCHAR(100)) AS mx' + @s2_cid
+          + CASE WHEN @s2_isnum = 1 THEN
+              N', CAST(AVG(' + @s2_castcol + N') AS NVARCHAR(100)) AS av' + @s2_cid
+            + N', CAST(CAST(STDEV(' + @s2_qn + N') AS NUMERIC(18,4)) AS NVARCHAR(100)) AS sd' + @s2_cid
+            ELSE N'' END;
+
+        /* Matching VALUES row. Typed NULLs (never bare NULL) keep the unpivoted
+           columns single-typed regardless of whether a column is numeric. */
+        SET @StatUnpivot = @StatUnpivot + CASE WHEN @StatUnpivot <> N'' THEN N',
+            ' ELSE N'' END
+          + N'(' + @s2_cid + N', a.mn' + @s2_cid + N', a.mx' + @s2_cid + N', '
+          + CASE WHEN @s2_isnum = 1 THEN N'a.av' + @s2_cid ELSE N'CAST(NULL AS NVARCHAR(100))' END + N', '
+          + CASE WHEN @s2_isnum = 1 THEN N'a.sd' + @s2_cid ELSE N'CAST(NULL AS NVARCHAR(100))' END + N')';
+
+        /* Batch B: median, numeric columns only, and only where PERCENTILE_DISC is
+           supported (compat level 110+ — matching the prior per-column gate). */
+        IF @s2_isnum = 1 AND @SQLCompatLevel >= 110
         BEGIN
-          SELECT @SQLString = N'
-            UPDATE #table_column_profile
-            SET max_value = max_val ,
-                min_value = min_val'
-                + CASE WHEN @IsNumericStat = 1 THEN N' ,
-                mean = mean_val ,
-                std_dev = std_dev_val' ELSE N'' END + N'
-            FROM (
-              SELECT CAST(MAX(' + QUOTENAME(@stats_col_name) + ') AS NVARCHAR(100)) max_val ,
-                     CAST(MIN(' + QUOTENAME(@stats_col_name) + ') AS NVARCHAR(100)) min_val'
-                     + CASE WHEN @IsNumericStat = 1 THEN N' ,
-                     CAST(AVG(' + @col_name + ') AS NVARCHAR(100)) mean_val ,
-                     CAST(CAST(STDEV(' + QUOTENAME(@stats_col_name) + ') AS NUMERIC(18,4)) AS NVARCHAR(100)) std_dev_val' ELSE N'' END + N'
-              FROM ' + @FromTableName + '
-            ) stats
-            WHERE column_id = ' + CAST(@stats_col_num AS NVARCHAR(10))
+          SET @MedSelect = @MedSelect + CASE WHEN @MedSelect <> N'' THEN N', ' ELSE N'' END
+            + N'CAST(PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY ' + @s2_qn + N') OVER () AS NVARCHAR(100)) AS md' + @s2_cid;
 
-          IF @Verbose = 1
-          BEGIN
-            RAISERROR (N'Updating data in #table_column_profile for column min/max/mean/std_dev', 0, 1) WITH NOWAIT;
-            RAISERROR (@SQLString, 0, 1) WITH NOWAIT;;
-          END
-
-          IF @SQLString IS NULL
-            RAISERROR('@SQLString is null', 16, 1);
-
-          EXECUTE sp_executesql @SQLString;
+          SET @MedUnpivot = @MedUnpivot + CASE WHEN @MedUnpivot <> N'' THEN N',
+            ' ELSE N'' END
+            + N'(' + @s2_cid + N', a.md' + @s2_cid + N')';
         END
-       
-        /* Update median */
-        IF @SQLCompatLevel >= 110
-        BEGIN
-        
-          SELECT @SQLString = N'
-            UPDATE #table_column_profile 
-            SET median = median_val
-            FROM (
-              SELECT DISTINCT median_val = PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY ' + QUOTENAME(@stats_col_name) + ') OVER ()
-              FROM ' + @FromTableName + ' 
-            ) stats 
-            WHERE column_id = ' + CAST(@stats_col_num AS NVARCHAR(10))
 
-          IF @Verbose = 1
-          BEGIN
-            RAISERROR (N'Update median', 0, 1) WITH NOWAIT;
-            RAISERROR (@SQLString, 0, 1) WITH NOWAIT;;
-          END
-  
-          IF @SQLString IS NULL
-            RAISERROR('@SQLString is null', 16, 1);
-  
-          IF @stats_col_type IN ('bigint', 'decimal', 'int', 'money', 'numeric', 'smallint', 'smallmoney', 'tinyint', 'float', 'real')
-            EXECUTE sp_executesql @SQLString;
-       
-        END /* End Median Update */
-  
         FETCH NEXT FROM stats_cur INTO @stats_col_name, @stats_col_num, @stats_col_type;
-    
       END /* Column Statistics Loop */
-      
+
       CLOSE stats_cur;
-      DEALLOCATE stats_cur; 
-  
+      DEALLOCATE stats_cur;
+
+      /* Batch A — min/max/mean/std_dev in one scan. */
+      IF @StatSelect <> N''
+      BEGIN
+        SET @SQLString = N'
+          IF OBJECT_ID(''tempdb..#agg'') IS NOT NULL DROP TABLE #agg;
+
+          SELECT ' + @StatSelect + N'
+          INTO #agg
+          FROM ' + @FromTableName + N';
+
+          UPDATE p
+          SET min_value = v.minv ,
+              max_value = v.maxv ,
+              mean      = v.meanv ,
+              std_dev   = v.sdv
+          FROM #table_column_profile p
+          JOIN #agg a ON 1 = 1
+          CROSS APPLY (VALUES
+            ' + @StatUnpivot + N'
+          ) v(column_id, minv, maxv, meanv, sdv)
+          WHERE v.column_id = p.column_id;';
+
+        IF @Verbose = 1
+        BEGIN
+          RAISERROR (N'Single-pass column statistics: one scan for min/max/mean/std_dev.', 0, 1) WITH NOWAIT;
+          RAISERROR (@SQLString, 0, 1) WITH NOWAIT;
+        END
+
+        IF @SQLString IS NULL
+          RAISERROR('@SQLString is null', 16, 1);
+
+        EXECUTE sp_executesql @SQLString;
+      END
+
+      /* Batch B — all medians in one scan (guard already implies compat 110+ and
+         at least one numeric column). */
+      IF @MedSelect <> N''
+      BEGIN
+        SET @SQLString = N'
+          IF OBJECT_ID(''tempdb..#median'') IS NOT NULL DROP TABLE #median;
+
+          SELECT DISTINCT ' + @MedSelect + N'
+          INTO #median
+          FROM ' + @FromTableName + N';
+
+          UPDATE p
+          SET median = v.med
+          FROM #table_column_profile p
+          JOIN #median a ON 1 = 1
+          CROSS APPLY (VALUES
+            ' + @MedUnpivot + N'
+          ) v(column_id, med)
+          WHERE v.column_id = p.column_id;';
+
+        IF @Verbose = 1
+        BEGIN
+          RAISERROR (N'Single-pass medians: one scan for all median columns.', 0, 1) WITH NOWAIT;
+          RAISERROR (@SQLString, 0, 1) WITH NOWAIT;
+        END
+
+        IF @SQLString IS NULL
+          RAISERROR('@SQLString is null', 16, 1);
+
+        EXECUTE sp_executesql @SQLString;
+      END
+
     END /* 2 - Column Statistics */
 
     IF @Mode = 3 /* 3 - Candidate Key Check */
