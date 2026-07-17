@@ -18,7 +18,7 @@ CREATE PROCEDURE dbo.sp_DataProfile
    @ApproxDistinct BIT = 0 ,
    @Verbose BIT = 0
 /*
-sp_DataProfile v0.3 - Apr 20, 2015
+sp_DataProfile v0.4 - Jul 16, 2026
 
 (C) 2026, Jorriss LLC
 Released under the MIT License. See the LICENSE file for details.
