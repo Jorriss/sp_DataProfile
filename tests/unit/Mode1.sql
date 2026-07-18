@@ -1,10 +1,13 @@
 /*───────────────────────────────────────────────────────────────────────────
-  Mode1.sql  —  Column Detail (num_unique_values, num_nulls, min/max length)
+  Mode1.sql  —  Column Detail (distinct/cardinality, nulls, soft-nulls, min/max)
 
-  Detail set = result set 2. Shape (14 cols):
+  Detail set = result set 2. Shape (24 cols):
     column_id, name, user_type, system_type, length, precision, scale, is_nullable,
-    num_unique_values(BIGINT), unique_ratio(DEC(25,5)), num_nulls(BIGINT),
-    nulls_ratio(DEC(25,5)), min_length(INT), max_length(INT)
+    num_unique_values(BIGINT), unique_ratio(DEC(25,5)), cardinality(NVARCHAR),
+    num_nulls(BIGINT), nulls_ratio(DEC(25,5)),
+    num_blank(BIGINT), blank_ratio(DEC(25,5)), num_whitespace(BIGINT), whitespace_ratio(DEC(25,5)),
+    num_zero(BIGINT), zero_ratio(DEC(25,5)), num_negative(BIGINT), negative_ratio(DEC(25,5)),
+    min_length(INT), max_length(INT), min_value(NVARCHAR), max_value(NVARCHAR)
   Tests capture the full shape then project the deterministic columns.
 ───────────────────────────────────────────────────────────────────────────*/
 USE [DataProfileTest];
@@ -44,8 +47,11 @@ BEGIN
     CREATE TABLE #actual (
         column_id INT, name NVARCHAR(128), user_type NVARCHAR(128), system_type NVARCHAR(128),
         [length] NVARCHAR(50) NULL, [precision] INT, scale INT, is_nullable BIT,
-        num_unique_values BIGINT, unique_ratio DECIMAL(25,5), num_nulls BIGINT,
-        nulls_ratio DECIMAL(25,5), min_length INT, max_length INT
+        num_unique_values BIGINT, unique_ratio DECIMAL(25,5), cardinality NVARCHAR(30),
+        num_nulls BIGINT, nulls_ratio DECIMAL(25,5),
+        num_blank BIGINT, blank_ratio DECIMAL(25,5), num_whitespace BIGINT, whitespace_ratio DECIMAL(25,5),
+        num_zero BIGINT, zero_ratio DECIMAL(25,5), num_negative BIGINT, negative_ratio DECIMAL(25,5),
+        min_length INT, max_length INT, min_value NVARCHAR(100), max_value NVARCHAR(100)
     );
     EXEC tSQLtTest.CaptureProfile @TargetTable='#actual', @TableName='Nullable', @Mode=1, @ResultSetNo=2;
 
@@ -69,8 +75,11 @@ BEGIN
     CREATE TABLE #actual (
         column_id INT, name NVARCHAR(128), user_type NVARCHAR(128), system_type NVARCHAR(128),
         [length] NVARCHAR(50) NULL, [precision] INT, scale INT, is_nullable BIT,
-        num_unique_values BIGINT, unique_ratio DECIMAL(25,5), num_nulls BIGINT,
-        nulls_ratio DECIMAL(25,5), min_length INT, max_length INT
+        num_unique_values BIGINT, unique_ratio DECIMAL(25,5), cardinality NVARCHAR(30),
+        num_nulls BIGINT, nulls_ratio DECIMAL(25,5),
+        num_blank BIGINT, blank_ratio DECIMAL(25,5), num_whitespace BIGINT, whitespace_ratio DECIMAL(25,5),
+        num_zero BIGINT, zero_ratio DECIMAL(25,5), num_negative BIGINT, negative_ratio DECIMAL(25,5),
+        min_length INT, max_length INT, min_value NVARCHAR(100), max_value NVARCHAR(100)
     );
     EXEC tSQLtTest.CaptureProfile @TargetTable='#actual', @TableName='Cardinality', @Mode=1, @ResultSetNo=2;
 
@@ -93,8 +102,11 @@ BEGIN
     CREATE TABLE #actual (
         column_id INT, name NVARCHAR(128), user_type NVARCHAR(128), system_type NVARCHAR(128),
         [length] NVARCHAR(50) NULL, [precision] INT, scale INT, is_nullable BIT,
-        num_unique_values BIGINT, unique_ratio DECIMAL(25,5), num_nulls BIGINT,
-        nulls_ratio DECIMAL(25,5), min_length INT, max_length INT
+        num_unique_values BIGINT, unique_ratio DECIMAL(25,5), cardinality NVARCHAR(30),
+        num_nulls BIGINT, nulls_ratio DECIMAL(25,5),
+        num_blank BIGINT, blank_ratio DECIMAL(25,5), num_whitespace BIGINT, whitespace_ratio DECIMAL(25,5),
+        num_zero BIGINT, zero_ratio DECIMAL(25,5), num_negative BIGINT, negative_ratio DECIMAL(25,5),
+        min_length INT, max_length INT, min_value NVARCHAR(100), max_value NVARCHAR(100)
     );
     EXEC tSQLtTest.CaptureProfile @TargetTable='#actual', @TableName='AllTypes', @Mode=1, @ResultSetNo=2;
 
@@ -111,8 +123,11 @@ BEGIN
     CREATE TABLE #actual (
         column_id INT, name NVARCHAR(128), user_type NVARCHAR(128), system_type NVARCHAR(128),
         [length] NVARCHAR(50) NULL, [precision] INT, scale INT, is_nullable BIT,
-        num_unique_values BIGINT, unique_ratio DECIMAL(25,5), num_nulls BIGINT,
-        nulls_ratio DECIMAL(25,5), min_length INT, max_length INT
+        num_unique_values BIGINT, unique_ratio DECIMAL(25,5), cardinality NVARCHAR(30),
+        num_nulls BIGINT, nulls_ratio DECIMAL(25,5),
+        num_blank BIGINT, blank_ratio DECIMAL(25,5), num_whitespace BIGINT, whitespace_ratio DECIMAL(25,5),
+        num_zero BIGINT, zero_ratio DECIMAL(25,5), num_negative BIGINT, negative_ratio DECIMAL(25,5),
+        min_length INT, max_length INT, min_value NVARCHAR(100), max_value NVARCHAR(100)
     );
     EXEC tSQLtTest.CaptureProfile @TargetTable='#actual', @TableName='AllTypes', @Mode=1, @ResultSetNo=2;
     DECLARE @rows INT = (SELECT COUNT(*) FROM #actual);
@@ -126,8 +141,11 @@ BEGIN
     CREATE TABLE #actual (
         column_id INT, name NVARCHAR(128), user_type NVARCHAR(128), system_type NVARCHAR(128),
         [length] NVARCHAR(50) NULL, [precision] INT, scale INT, is_nullable BIT,
-        num_unique_values BIGINT, unique_ratio DECIMAL(25,5), num_nulls BIGINT,
-        nulls_ratio DECIMAL(25,5), min_length INT, max_length INT
+        num_unique_values BIGINT, unique_ratio DECIMAL(25,5), cardinality NVARCHAR(30),
+        num_nulls BIGINT, nulls_ratio DECIMAL(25,5),
+        num_blank BIGINT, blank_ratio DECIMAL(25,5), num_whitespace BIGINT, whitespace_ratio DECIMAL(25,5),
+        num_zero BIGINT, zero_ratio DECIMAL(25,5), num_negative BIGINT, negative_ratio DECIMAL(25,5),
+        min_length INT, max_length INT, min_value NVARCHAR(100), max_value NVARCHAR(100)
     );
     EXEC tSQLtTest.CaptureProfile @TargetTable='#actual', @TableName='Cardinality',
                                   @Mode=1, @ColumnList='cat_col', @ResultSetNo=2;
@@ -140,6 +158,143 @@ BEGIN
         num_nulls BIGINT, nulls_ratio DECIMAL(25,5), is_nullable BIT
     );
     INSERT INTO #exp VALUES ('cat_col', 3, 0.50000, NULL, NULL, 0);   -- cat_col: NOT NULL, 3 distinct / 6
+    EXEC tSQLt.AssertEqualsTable '#exp', '#got';
+END
+GO
+
+CREATE PROCEDURE Mode1.[test_Mode1_NullableTable_ReturnsBlankAndWhitespaceCounts]
+AS
+BEGIN
+    CREATE TABLE #actual (
+        column_id INT, name NVARCHAR(128), user_type NVARCHAR(128), system_type NVARCHAR(128),
+        [length] NVARCHAR(50) NULL, [precision] INT, scale INT, is_nullable BIT,
+        num_unique_values BIGINT, unique_ratio DECIMAL(25,5), cardinality NVARCHAR(30),
+        num_nulls BIGINT, nulls_ratio DECIMAL(25,5),
+        num_blank BIGINT, blank_ratio DECIMAL(25,5), num_whitespace BIGINT, whitespace_ratio DECIMAL(25,5),
+        num_zero BIGINT, zero_ratio DECIMAL(25,5), num_negative BIGINT, negative_ratio DECIMAL(25,5),
+        min_length INT, max_length INT, min_value NVARCHAR(100), max_value NVARCHAR(100)
+    );
+    EXEC tSQLtTest.CaptureProfile @TargetTable='#actual', @TableName='Nullable', @Mode=1, @ResultSetNo=2;
+
+    /* soft = {'x','','   ',NULL,'0','y'}: one empty ('' → num_blank) and one all-space
+       ('   ' → num_whitespace). Also pins the derived ratios (count / 6 rows) and proves
+       the counts are NULL for a numeric column (id) and 0 for a clean string column (s). */
+    SELECT name, num_blank, blank_ratio, num_whitespace, whitespace_ratio INTO #got FROM #actual;
+    CREATE TABLE #exp (
+        name NVARCHAR(128), num_blank BIGINT, blank_ratio DECIMAL(25,5),
+        num_whitespace BIGINT, whitespace_ratio DECIMAL(25,5)
+    );
+    INSERT INTO #exp VALUES
+      ('id',   NULL, NULL,    NULL, NULL),      -- numeric → soft-string counts NULL
+      ('s',    0,    0.00000, 0,    0.00000),   -- string, no blanks/whitespace
+      ('soft', 1,    0.16667, 1,    0.16667);   -- 1 blank + 1 whitespace / 6 rows
+    EXEC tSQLt.AssertEqualsTable '#exp', '#got';
+END
+GO
+
+CREATE PROCEDURE Mode1.[test_Mode1_SoftNumbersTable_ReturnsZeroAndNegativeCounts]
+AS
+BEGIN
+    CREATE TABLE #actual (
+        column_id INT, name NVARCHAR(128), user_type NVARCHAR(128), system_type NVARCHAR(128),
+        [length] NVARCHAR(50) NULL, [precision] INT, scale INT, is_nullable BIT,
+        num_unique_values BIGINT, unique_ratio DECIMAL(25,5), cardinality NVARCHAR(30),
+        num_nulls BIGINT, nulls_ratio DECIMAL(25,5),
+        num_blank BIGINT, blank_ratio DECIMAL(25,5), num_whitespace BIGINT, whitespace_ratio DECIMAL(25,5),
+        num_zero BIGINT, zero_ratio DECIMAL(25,5), num_negative BIGINT, negative_ratio DECIMAL(25,5),
+        min_length INT, max_length INT, min_value NVARCHAR(100), max_value NVARCHAR(100)
+    );
+    EXEC tSQLtTest.CaptureProfile @TargetTable='#actual', @TableName='SoftNumbers', @Mode=1, @ResultSetNo=2;
+
+    /* n = {0,-5,3,0,-1}; n_nullable = {0,NULL,-2,4,0}. Zero/negative counts skip NULLs;
+       num_blank is NULL on numeric columns. Ratios are count / 5 rows. */
+    SELECT name, num_zero, zero_ratio, num_negative, negative_ratio, num_blank INTO #got FROM #actual;
+    CREATE TABLE #exp (
+        name NVARCHAR(128), num_zero BIGINT, zero_ratio DECIMAL(25,5),
+        num_negative BIGINT, negative_ratio DECIMAL(25,5), num_blank BIGINT
+    );
+    INSERT INTO #exp VALUES
+      ('n',          2, 0.40000, 2, 0.40000, NULL),   -- zeros rows 1,4; negs rows 2,5
+      ('n_nullable', 2, 0.40000, 1, 0.20000, NULL);   -- zeros rows 1,5; neg row 3 (NULL skipped)
+    EXEC tSQLt.AssertEqualsTable '#exp', '#got';
+END
+GO
+
+CREATE PROCEDURE Mode1.[test_Mode1_CardinalityTable_ClassifiesCardinality]
+AS
+BEGIN
+    CREATE TABLE #actual (
+        column_id INT, name NVARCHAR(128), user_type NVARCHAR(128), system_type NVARCHAR(128),
+        [length] NVARCHAR(50) NULL, [precision] INT, scale INT, is_nullable BIT,
+        num_unique_values BIGINT, unique_ratio DECIMAL(25,5), cardinality NVARCHAR(30),
+        num_nulls BIGINT, nulls_ratio DECIMAL(25,5),
+        num_blank BIGINT, blank_ratio DECIMAL(25,5), num_whitespace BIGINT, whitespace_ratio DECIMAL(25,5),
+        num_zero BIGINT, zero_ratio DECIMAL(25,5), num_negative BIGINT, negative_ratio DECIMAL(25,5),
+        min_length INT, max_length INT, min_value NVARCHAR(100), max_value NVARCHAR(100)
+    );
+    EXEC tSQLtTest.CaptureProfile @TargetTable='#actual', @TableName='Cardinality', @Mode=1, @ResultSetNo=2;
+
+    /* Default @CategoricalMaxDistinct=50 over 6 rows. */
+    SELECT name, cardinality INTO #got FROM #actual;
+    CREATE TABLE #exp (name NVARCHAR(128), cardinality NVARCHAR(30));
+    INSERT INTO #exp VALUES
+      ('const_col', 'Constant'),        -- distinct 1
+      ('bin_col',   'Binary'),          -- distinct 2
+      ('uniq_col',  'Unique'),          -- distinct 6 = num_rows
+      ('cat_col',   'Categorical');     -- distinct 3 <= 50
+    EXEC tSQLt.AssertEqualsTable '#exp', '#got';
+END
+GO
+
+CREATE PROCEDURE Mode1.[test_Mode1_LowThreshold_ReclassifiesCategoricalAsHighCardinality]
+AS
+BEGIN
+    CREATE TABLE #actual (
+        column_id INT, name NVARCHAR(128), user_type NVARCHAR(128), system_type NVARCHAR(128),
+        [length] NVARCHAR(50) NULL, [precision] INT, scale INT, is_nullable BIT,
+        num_unique_values BIGINT, unique_ratio DECIMAL(25,5), cardinality NVARCHAR(30),
+        num_nulls BIGINT, nulls_ratio DECIMAL(25,5),
+        num_blank BIGINT, blank_ratio DECIMAL(25,5), num_whitespace BIGINT, whitespace_ratio DECIMAL(25,5),
+        num_zero BIGINT, zero_ratio DECIMAL(25,5), num_negative BIGINT, negative_ratio DECIMAL(25,5),
+        min_length INT, max_length INT, min_value NVARCHAR(100), max_value NVARCHAR(100)
+    );
+    /* @CategoricalMaxDistinct=2: cat_col (distinct 3) is now above the threshold and not
+       Constant/Binary/Unique, so it flips to High-cardinality — proves the param path. */
+    EXEC tSQLtTest.CaptureProfile @TargetTable='#actual', @TableName='Cardinality',
+                                  @Mode=1, @CategoricalMaxDistinct=2, @ResultSetNo=2;
+
+    SELECT name, cardinality INTO #got FROM #actual;
+    CREATE TABLE #exp (name NVARCHAR(128), cardinality NVARCHAR(30));
+    INSERT INTO #exp VALUES
+      ('const_col', 'Constant'),
+      ('bin_col',   'Binary'),
+      ('uniq_col',  'Unique'),
+      ('cat_col',   'High-cardinality');   -- distinct 3 > 2
+    EXEC tSQLt.AssertEqualsTable '#exp', '#got';
+END
+GO
+
+CREATE PROCEDURE Mode1.[test_Mode1_NullableTable_ReturnsMinMaxStringValue]
+AS
+BEGIN
+    CREATE TABLE #actual (
+        column_id INT, name NVARCHAR(128), user_type NVARCHAR(128), system_type NVARCHAR(128),
+        [length] NVARCHAR(50) NULL, [precision] INT, scale INT, is_nullable BIT,
+        num_unique_values BIGINT, unique_ratio DECIMAL(25,5), cardinality NVARCHAR(30),
+        num_nulls BIGINT, nulls_ratio DECIMAL(25,5),
+        num_blank BIGINT, blank_ratio DECIMAL(25,5), num_whitespace BIGINT, whitespace_ratio DECIMAL(25,5),
+        num_zero BIGINT, zero_ratio DECIMAL(25,5), num_negative BIGINT, negative_ratio DECIMAL(25,5),
+        min_length INT, max_length INT, min_value NVARCHAR(100), max_value NVARCHAR(100)
+    );
+    EXEC tSQLtTest.CaptureProfile @TargetTable='#actual', @TableName='Nullable', @Mode=1, @ResultSetNo=2;
+
+    /* s = {'apple',NULL,'apple','pear',NULL,'kiwi'} → alphabetical MIN 'apple', MAX 'pear'.
+       min/max value are NULL for the numeric id column. */
+    SELECT name, min_value, max_value INTO #got FROM #actual WHERE name IN ('id','s');
+    CREATE TABLE #exp (name NVARCHAR(128), min_value NVARCHAR(100), max_value NVARCHAR(100));
+    INSERT INTO #exp VALUES
+      ('id', NULL,    NULL),
+      ('s',  'apple', 'pear');
     EXEC tSQLt.AssertEqualsTable '#exp', '#got';
 END
 GO

@@ -66,6 +66,7 @@ CREATE PROCEDURE tSQLtTest.CaptureProfile
     @ShowForeignKeys  BIT            = 0,
     @ShowIndexes      BIT            = 0,
     @ApproxDistinct   BIT            = 0,
+    @CategoricalMaxDistinct INT      = 50,       -- Mode 1 cardinality-classification threshold
     @SampleValue      INT            = 100,      -- 100 = full table, no TABLESAMPLE
     @SampleType       NVARCHAR(50)   = N'PERCENT',
     @ForceLoopback    BIT            = NULL,     -- retained for compatibility; no-op (always loopback)
@@ -87,6 +88,7 @@ BEGIN
         + N', @ShowForeignKeys = ' + CAST(@ShowForeignKeys AS NVARCHAR(1))
         + N', @ShowIndexes = ' + CAST(@ShowIndexes AS NVARCHAR(1))
         + N', @ApproxDistinct = ' + CAST(@ApproxDistinct AS NVARCHAR(1))
+        + N', @CategoricalMaxDistinct = ' + CAST(@CategoricalMaxDistinct AS NVARCHAR(10))
         + CASE WHEN @ColumnList IS NULL THEN N''
                ELSE N', @ColumnList = N''' + REPLACE(@ColumnList, '''', '''''') + N'''' END;
 

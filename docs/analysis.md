@@ -59,11 +59,11 @@ Other techniques, in priority order:
 Grouped by value:
 
 **Per-column depth (biggest gap):**
-- **Blank/empty/whitespace counts** separate from NULL; zero-count and negative-count for numerics.
+- ✅ **Blank/empty/whitespace counts** separate from NULL; zero-count and negative-count for numerics. *(Done — Mode 1 `num_blank`/`num_whitespace`/`num_zero`/`num_negative` + ratios.)*
 - **Mode value + its frequency** (most common value), and top-N / bottom-N frequent values per column — right now the frequency distribution (Mode 4) works for only one column at a time.
 - **Percentiles** P25/P75/P90/P95/P99 (you already have the `PERCENTILE_DISC` machinery for median — extend it), plus `SUM` and coefficient of variation for numerics.
-- **Min/max string *values*** (alphabetical first/last), not just min/max length.
-- **Cardinality classification** — auto-label each column as constant / binary / categorical / high-cardinality / unique-key-candidate from the unique_ratio you already compute.
+- ✅ **Min/max string *values*** (alphabetical first/last), not just min/max length. *(Done — Mode 1 `min_value`/`max_value`.)*
+- ✅ **Cardinality classification** — auto-label each column as constant / binary / categorical / high-cardinality / unique-key-candidate from the unique_ratio you already compute. *(Done — Mode 1 `cardinality`, threshold `@CategoricalMaxDistinct`.)*
 - **Pattern & format profiling** — detect emails, phone numbers, all-numeric-in-varchar, date-in-varchar, casing patterns, length histogram. This is what separates a "column detail" tool from a real profiler.
 - **Data-type-mismatch detection** — count rows where a varchar column isn't `ISNUMERIC`/`TRY_CONVERT`-able to its apparent type.
 

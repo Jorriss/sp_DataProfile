@@ -16,9 +16,10 @@ CREATE PROCEDURE dbo.sp_DataProfile
    @SampleType NVARCHAR(50) = 'PERCENT' ,
    @ExactRowCount BIT = 0 ,
    @ApproxDistinct BIT = 0 ,
+   @CategoricalMaxDistinct INT = 50 ,
    @Verbose BIT = 0
 /*
-sp_DataProfile v0.4 - Jul 16, 2026
+sp_DataProfile v0.5 - Jul 18, 2026
 
 (C) 2026, Jorriss LLC
 Released under the MIT License. See the LICENSE file for details.
@@ -28,12 +29,17 @@ Source is located at: https://github.com/Jorriss/sp_DataProfile
 How to use:
 Mode:
 0 = Table Overview 
-1 = Column Detail - Number Unique Values, Number Nulls, Min Len, Max Len
+1 = Column Detail - Number Unique Values, Cardinality classification, Number Nulls,
+    soft-null counts (blank/whitespace/zero/negative) + ratios, Min/Max Len, Min/Max Value
 2 = Column Statistics - Min, Max, Mean, Median, Standard Deviation
 3 = Candidate Key Check - You need a @ColumnList with this
 4 = Column Value Distribution - You need to provide a single column name in @ColumnList. If more than one is provided only the first one is used.
 
 You can use @ShowIndexes = 1 and @ShowForeignKeys = 1 in any mode to see all of the indexes and foreign keys.
+
+@CategoricalMaxDistinct (default 50) tunes the Mode 1 cardinality classification: an eligible column
+whose distinct count is <= this value (and that isn't Constant/Binary/Unique) is labeled 'Categorical';
+above it, 'High-cardinality'. Lower it to be stricter about what counts as categorical.
 
 Example usage:
 Table Overview
@@ -257,6 +263,14 @@ BEGIN
       [unique_ratio] AS CAST((CAST([num_unique_values] AS DECIMAL(25,5)) / ISNULL(NULLIF([num_rows], 0), 1)) AS DECIMAL(25,5)) ,
       [num_nulls]          BIGINT        NULL ,
       [nulls_ratio] AS CAST((CAST([num_nulls] AS DECIMAL(25,5)) / ISNULL(NULLIF([num_rows], 0), 1)) AS DECIMAL(25,5)) ,
+      [num_blank]          BIGINT        NULL ,
+      [blank_ratio] AS CAST((CAST([num_blank] AS DECIMAL(25,5)) / ISNULL(NULLIF([num_rows], 0), 1)) AS DECIMAL(25,5)) ,
+      [num_whitespace]     BIGINT        NULL ,
+      [whitespace_ratio] AS CAST((CAST([num_whitespace] AS DECIMAL(25,5)) / ISNULL(NULLIF([num_rows], 0), 1)) AS DECIMAL(25,5)) ,
+      [num_zero]           BIGINT        NULL ,
+      [zero_ratio] AS CAST((CAST([num_zero] AS DECIMAL(25,5)) / ISNULL(NULLIF([num_rows], 0), 1)) AS DECIMAL(25,5)) ,
+      [num_negative]       BIGINT        NULL ,
+      [negative_ratio] AS CAST((CAST([num_negative] AS DECIMAL(25,5)) / ISNULL(NULLIF([num_rows], 0), 1)) AS DECIMAL(25,5)) ,
       [min_length]         INT           NULL ,
       [max_length]         INT           NULL ,
       [min_value]          NVARCHAR(100) NULL ,
@@ -559,7 +573,9 @@ BEGIN
               @m1_cid    NVARCHAR(10) ,
               @uOK       BIT ,
               @nOK       BIT ,
-              @lOK       BIT;
+              @lOK       BIT ,
+              @vOK       BIT ,
+              @numOK     BIT;
 
       DECLARE m1_cur CURSOR
         LOCAL STATIC FORWARD_ONLY READ_ONLY FOR
@@ -588,10 +604,14 @@ BEGIN
                         THEN 1 ELSE 0 END;
         /* num_nulls: nullable columns of any type. */
         SET @nOK = @m1_nullable;
-        /* min/max length: string types only. */
+        /* min/max length + blank/whitespace counts: string types only (LEN/DATALENGTH are valid on max). */
         SET @lOK = CASE WHEN @m1_col_type IN ('varchar', 'char', 'nvarchar', 'nchar') THEN 1 ELSE 0 END;
+        /* min/max string VALUE: string types EXCLUDING (max) — MIN/MAX aggregates are invalid on LOB. */
+        SET @vOK = CASE WHEN @lOK = 1 AND @m1_len <> -1 THEN 1 ELSE 0 END;
+        /* zero/negative counts: numeric types only (bit excluded — boolean, not a quantity). */
+        SET @numOK = CASE WHEN @m1_col_type IN ('tinyint', 'smallint', 'int', 'bigint', 'decimal', 'numeric', 'money', 'smallmoney', 'float', 'real') THEN 1 ELSE 0 END;
 
-        IF @uOK = 1 OR @nOK = 1 OR @lOK = 1
+        IF @uOK = 1 OR @nOK = 1 OR @lOK = 1 OR @numOK = 1
         BEGIN
           IF @uOK = 1
             SET @AggSelect = @AggSelect + CASE WHEN @AggSelect <> N'' THEN N', ' ELSE N'' END
@@ -605,19 +625,43 @@ BEGIN
               + N'CAST(COUNT_BIG(CASE WHEN ' + @m1_qn + N' IS NULL THEN 1 END) AS BIGINT) AS n' + @m1_cid;
 
           IF @lOK = 1
+            /* min/max length; blank (empty) and whitespace-only (soft-null) counts; min/max
+               string value truncated to 100. Note: SQL Server ignores trailing spaces in
+               comparisons, so col = '' matches whitespace-only strings too — distinguish with
+               DATALENGTH (truly empty) vs LEN = 0 AND DATALENGTH > 0 (all-space, non-empty).
+               LEN strips trailing spaces only, so this catches space chars, not tabs/newlines. */
             SET @AggSelect = @AggSelect + CASE WHEN @AggSelect <> N'' THEN N', ' ELSE N'' END
               + N'CAST(MIN(LEN(' + @m1_qn + N')) AS INT) AS mnl' + @m1_cid
-              + N', CAST(MAX(LEN(' + @m1_qn + N')) AS INT) AS mxl' + @m1_cid;
+              + N', CAST(MAX(LEN(' + @m1_qn + N')) AS INT) AS mxl' + @m1_cid
+              + N', CAST(COUNT_BIG(CASE WHEN DATALENGTH(' + @m1_qn + N') = 0 THEN 1 END) AS BIGINT) AS bl' + @m1_cid
+              + N', CAST(COUNT_BIG(CASE WHEN LEN(' + @m1_qn + N') = 0 AND DATALENGTH(' + @m1_qn + N') > 0 THEN 1 END) AS BIGINT) AS ws' + @m1_cid;
+
+          IF @vOK = 1
+            /* min/max string value, truncated to 100 chars to fit min_value/max_value. */
+            SET @AggSelect = @AggSelect + CASE WHEN @AggSelect <> N'' THEN N', ' ELSE N'' END
+              + N'CAST(LEFT(MIN(' + @m1_qn + N'), 100) AS NVARCHAR(100)) AS mnv' + @m1_cid
+              + N', CAST(LEFT(MAX(' + @m1_qn + N'), 100) AS NVARCHAR(100)) AS mxv' + @m1_cid;
+
+          IF @numOK = 1
+            SET @AggSelect = @AggSelect + CASE WHEN @AggSelect <> N'' THEN N', ' ELSE N'' END
+              + N'CAST(COUNT_BIG(CASE WHEN ' + @m1_qn + N' = 0 THEN 1 END) AS BIGINT) AS z' + @m1_cid
+              + N', CAST(COUNT_BIG(CASE WHEN ' + @m1_qn + N' < 0 THEN 1 END) AS BIGINT) AS ng' + @m1_cid;
 
           /* Matching VALUES row. Typed NULLs (never bare NULL) keep the unpivoted
              columns single-typed regardless of which metrics a column qualifies for. */
           SET @Unpivot = @Unpivot + CASE WHEN @Unpivot <> N'' THEN N',
             ' ELSE N'' END
             + N'(' + @m1_cid + N', '
-            + CASE WHEN @uOK = 1 THEN N'a.u'   + @m1_cid ELSE N'CAST(NULL AS BIGINT)' END + N', '
-            + CASE WHEN @nOK = 1 THEN N'a.n'   + @m1_cid ELSE N'CAST(NULL AS BIGINT)' END + N', '
-            + CASE WHEN @lOK = 1 THEN N'a.mnl' + @m1_cid ELSE N'CAST(NULL AS INT)'    END + N', '
-            + CASE WHEN @lOK = 1 THEN N'a.mxl' + @m1_cid ELSE N'CAST(NULL AS INT)'    END + N')';
+            + CASE WHEN @uOK   = 1 THEN N'a.u'   + @m1_cid ELSE N'CAST(NULL AS BIGINT)'        END + N', '
+            + CASE WHEN @nOK   = 1 THEN N'a.n'   + @m1_cid ELSE N'CAST(NULL AS BIGINT)'        END + N', '
+            + CASE WHEN @lOK   = 1 THEN N'a.mnl' + @m1_cid ELSE N'CAST(NULL AS INT)'           END + N', '
+            + CASE WHEN @lOK   = 1 THEN N'a.mxl' + @m1_cid ELSE N'CAST(NULL AS INT)'           END + N', '
+            + CASE WHEN @lOK   = 1 THEN N'a.bl'  + @m1_cid ELSE N'CAST(NULL AS BIGINT)'        END + N', '
+            + CASE WHEN @lOK   = 1 THEN N'a.ws'  + @m1_cid ELSE N'CAST(NULL AS BIGINT)'        END + N', '
+            + CASE WHEN @numOK = 1 THEN N'a.z'   + @m1_cid ELSE N'CAST(NULL AS BIGINT)'        END + N', '
+            + CASE WHEN @numOK = 1 THEN N'a.ng'  + @m1_cid ELSE N'CAST(NULL AS BIGINT)'        END + N', '
+            + CASE WHEN @vOK   = 1 THEN N'a.mnv' + @m1_cid ELSE N'CAST(NULL AS NVARCHAR(100))' END + N', '
+            + CASE WHEN @vOK   = 1 THEN N'a.mxv' + @m1_cid ELSE N'CAST(NULL AS NVARCHAR(100))' END + N')';
         END
 
         FETCH NEXT FROM m1_cur INTO @m1_col_name, @m1_col_id, @m1_col_type, @m1_len, @m1_nullable;
@@ -641,12 +685,18 @@ BEGIN
           SET num_unique_values = v.uniq ,
               num_nulls         = v.nulls ,
               min_length        = v.minlen ,
-              max_length        = v.maxlen
+              max_length        = v.maxlen ,
+              num_blank         = v.blank ,
+              num_whitespace    = v.ws ,
+              num_zero          = v.zero ,
+              num_negative      = v.neg ,
+              min_value         = v.minval ,
+              max_value         = v.maxval
           FROM #table_column_profile p
           JOIN #agg a ON 1 = 1
           CROSS APPLY (VALUES
             ' + @Unpivot + N'
-          ) v(column_id, uniq, nulls, minlen, maxlen)
+          ) v(column_id, uniq, nulls, minlen, maxlen, blank, ws, zero, neg, minval, maxval)
           WHERE v.column_id = p.column_id;';
 
         IF @Verbose = 1
@@ -1043,11 +1093,31 @@ BEGIN
                [scale] ,
                [is_nullable] ,
                [num_unique_values] ,
-               [unique_ratio] , 
-               [num_nulls] , 
+               [unique_ratio] ,
+               [cardinality] =
+                 CASE
+                   WHEN [num_unique_values] IS NULL                    THEN NULL   /* ineligible type (LOB/max) */
+                   WHEN [num_rows] = 0 OR [num_unique_values] = 0      THEN NULL   /* empty table */
+                   WHEN [num_unique_values] = 1                        THEN 'Constant'
+                   WHEN [num_unique_values] = 2                        THEN 'Binary'
+                   WHEN [num_unique_values] = [num_rows]               THEN 'Unique'
+                   WHEN [num_unique_values] <= @CategoricalMaxDistinct THEN 'Categorical'
+                   ELSE 'High-cardinality'
+                 END ,
+               [num_nulls] ,
                [nulls_ratio] ,
+               [num_blank] ,
+               [blank_ratio] ,
+               [num_whitespace] ,
+               [whitespace_ratio] ,
+               [num_zero] ,
+               [zero_ratio] ,
+               [num_negative] ,
+               [negative_ratio] ,
                [min_length] ,
-               [max_length]
+               [max_length] ,
+               [min_value] ,
+               [max_value]
       FROM #table_column_profile
       /* Honor @ColumnList when supplied; display all columns when it isn't. */
       WHERE (NOT EXISTS (SELECT 1 FROM #column_filter)

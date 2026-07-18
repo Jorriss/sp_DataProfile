@@ -77,9 +77,8 @@ GO
 
 /*═══════════════════════════════════════════════════════════════════════════
   Nullable — pins num_nulls / distinct / length. `s` is the clean asserted
-  column; `soft` seeds empty/whitespace values for the future soft-null feature
-  (#1) and is only asserted on num_nulls (unambiguous = COUNT of IS NULL).
-  6 rows.
+  column; `soft` seeds empty/whitespace values that drive the soft-null feature
+  (#1): num_blank (empty) and num_whitespace (all-space, non-empty). 6 rows.
 ═══════════════════════════════════════════════════════════════════════════*/
 IF OBJECT_ID('dbo.Nullable') IS NOT NULL DROP TABLE dbo.Nullable;
 CREATE TABLE dbo.Nullable (
@@ -99,8 +98,12 @@ INSERT INTO dbo.Nullable (id, s, soft) VALUES
      s   : num_nulls = 2  (rows 2,5)
            num_unique_values = 3  (distinct {'apple','pear','kiwi'})
            min_length = LEN('pear'|'kiwi') = 4, max_length = LEN('apple') = 5
-     soft: num_nulls = 1  (row 4). (Distinct/length not asserted — trailing-space
-           collation nuance is intentionally left for the #1 feature work.) */
+           min_value = 'apple', max_value = 'pear' (alphabetical extremes)
+     soft: num_nulls = 1  (row 4)
+           num_blank = 1  (row 2 '' → DATALENGTH 0)
+           num_whitespace = 1  (row 3 '   ' → LEN 0, DATALENGTH 3)
+           (distinct/length still un-asserted: '' and '   ' compare equal under
+           SQL Server trailing-space collation, so those stay ambiguous.) */
 GO
 
 /*═══════════════════════════════════════════════════════════════════════════
@@ -122,6 +125,11 @@ INSERT INTO dbo.Cardinality (const_col, bin_col, uniq_col, cat_col) VALUES
   (7, 0, 5, 'C'),
   (7, 1, 6, 'A');
 /* Mode 1 num_unique_values: const_col=1, bin_col=2, uniq_col=6, cat_col=3.
+   Mode 1 cardinality (default @CategoricalMaxDistinct=50, 6 rows):
+     const_col → 'Constant' (distinct 1), bin_col → 'Binary' (distinct 2),
+     uniq_col → 'Unique' (distinct = num_rows), cat_col → 'Categorical' (3 <= 50).
+     With @CategoricalMaxDistinct=2, cat_col (distinct 3) → 'High-cardinality'.
+   Mode 1 zero counts: bin_col num_zero=3 (rows 1,3,5); const_col/uniq_col num_zero=0.
    Mode 4 on cat_col: A=3 (50%), B=2 (33.33%), C=1 (16.67%); distinct_row_count=3. */
 GO
 
@@ -139,6 +147,28 @@ INSERT INTO dbo.Stats (val) VALUES (1),(1),(3),(5),(5);
      mean      = '3'       (AVG over INT = 15/5 = 3, exact — no truncation here)
      median    = '3'       (PERCENTILE_DISC(0.5) of 1,1,3,5,5)
      std_dev   = '2.0000'  (sample STDEV: sum sq dev 16 / (n-1)=4 → var 4 → 2, cast NUMERIC(18,4)) */
+GO
+
+/*═══════════════════════════════════════════════════════════════════════════
+  SoftNumbers — numeric soft-null counts (#1): zeros and negatives. `n` is NOT
+  NULL so counts are unambiguous; `n_nullable` mixes a NULL to prove zero/negative
+  counting skips NULLs. 5 rows.
+═══════════════════════════════════════════════════════════════════════════*/
+IF OBJECT_ID('dbo.SoftNumbers') IS NOT NULL DROP TABLE dbo.SoftNumbers;
+CREATE TABLE dbo.SoftNumbers (
+    n          INT NOT NULL,   -- {0,-5,3,0,-1}
+    n_nullable INT     NULL    -- {0,NULL,-2,4,0}
+);
+INSERT INTO dbo.SoftNumbers (n, n_nullable) VALUES
+  ( 0,  0   ),
+  (-5,  NULL),
+  ( 3, -2   ),
+  ( 0,  4   ),
+  (-1,  0   );
+/* Mode 1 asserted values:
+     n         : num_zero = 2 (rows 1,4), num_negative = 2 (rows 2,5), num_nulls = NULL
+     n_nullable: num_zero = 2 (rows 1,5), num_negative = 1 (row 3), num_nulls = 1 (row 2)
+   Both are numeric → num_blank / num_whitespace / min_value / max_value = NULL. */
 GO
 
 /*═══════════════════════════════════════════════════════════════════════════

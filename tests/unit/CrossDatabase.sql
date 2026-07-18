@@ -17,8 +17,11 @@ BEGIN
     CREATE TABLE #actual (
         column_id INT, name NVARCHAR(128), user_type NVARCHAR(128), system_type NVARCHAR(128),
         [length] NVARCHAR(50) NULL, [precision] INT, scale INT, is_nullable BIT,
-        num_unique_values BIGINT, unique_ratio DECIMAL(25,5), num_nulls BIGINT,
-        nulls_ratio DECIMAL(25,5), min_length INT, max_length INT
+        num_unique_values BIGINT, unique_ratio DECIMAL(25,5), cardinality NVARCHAR(30),
+        num_nulls BIGINT, nulls_ratio DECIMAL(25,5),
+        num_blank BIGINT, blank_ratio DECIMAL(25,5), num_whitespace BIGINT, whitespace_ratio DECIMAL(25,5),
+        num_zero BIGINT, zero_ratio DECIMAL(25,5), num_negative BIGINT, negative_ratio DECIMAL(25,5),
+        min_length INT, max_length INT, min_value NVARCHAR(100), max_value NVARCHAR(100)
     );
     /* @ForceLoopback=1 → proc runs from master context; DataProfileTest must be qualified. */
     EXEC tSQLtTest.CaptureProfile @TargetTable='#actual', @TableName='Cardinality',
