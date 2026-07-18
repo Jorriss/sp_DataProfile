@@ -11,7 +11,7 @@ GO
 EXEC tSQLt.NewTestClass 'StackOverflowSmoke';
 GO
 
-CREATE PROCEDURE StackOverflowSmoke.[test Mode 0 against Posts runs and returns shape]
+CREATE PROCEDURE StackOverflowSmoke.[test_Mode0_PostsTable_RunsAndReturnsShape]
 AS
 BEGIN
     IF DB_ID('StackOverflow') IS NULL OR OBJECT_ID('StackOverflow.dbo.Posts') IS NULL
@@ -27,7 +27,7 @@ BEGIN
 END
 GO
 
-CREATE PROCEDURE StackOverflowSmoke.[test Mode 1 against Users runs without exception]
+CREATE PROCEDURE StackOverflowSmoke.[test_Mode1_UsersTable_RunsWithoutException]
 AS
 BEGIN
     IF DB_ID('StackOverflow') IS NULL OR OBJECT_ID('StackOverflow.dbo.Users') IS NULL
@@ -46,7 +46,7 @@ BEGIN
 END
 GO
 
-CREATE PROCEDURE StackOverflowSmoke.[test all modes 0-4 against Users return without error]
+CREATE PROCEDURE StackOverflowSmoke.[test_AllModes0To4_UsersTable_ReturnWithoutError]
 AS
 BEGIN
     IF DB_ID('StackOverflow') IS NULL OR OBJECT_ID('StackOverflow.dbo.Users') IS NULL

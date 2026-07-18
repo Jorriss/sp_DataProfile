@@ -14,7 +14,30 @@ GO
 EXEC tSQLt.NewTestClass 'Mode2';
 GO
 
-CREATE PROCEDURE Mode2.[test Mode 2 min max against Stats]
+CREATE PROCEDURE Mode2.[test_Mode2_StatsTable_ReturnsOverviewRow]
+AS
+BEGIN
+    /* The overview row is result set 1 (object_id, schema_name, table_name, row_count, is_sample) —
+       median-independent, so no compat gate. Never asserted for Mode 2 before this. object_id is
+       DB-dependent → asserted non-null. */
+    CREATE TABLE #actual (
+        object_id INT, schema_name NVARCHAR(128), table_name NVARCHAR(128),
+        row_count BIGINT, is_sample NVARCHAR(10)
+    );
+    EXEC tSQLtTest.CaptureProfile @TargetTable='#actual', @TableName='Stats', @Mode=2, @ResultSetNo=1;
+
+    SELECT schema_name, table_name, row_count, is_sample INTO #got FROM #actual;
+    CREATE TABLE #exp (schema_name NVARCHAR(128), table_name NVARCHAR(128), row_count BIGINT, is_sample NVARCHAR(10));
+    /* is_sample='True' from the helper default @SampleValue=100; row_count is the physical count. */
+    INSERT INTO #exp VALUES ('dbo', 'Stats', 5, 'True');   -- Stats has 5 rows
+    EXEC tSQLt.AssertEqualsTable '#exp', '#got';
+
+    IF (SELECT object_id FROM #actual) IS NULL
+        EXEC tSQLt.Fail 'overview object_id was NULL';
+END
+GO
+
+CREATE PROCEDURE Mode2.[test_Mode2_StatsTable_ReturnsMinAndMax]
 AS
 BEGIN
     IF tSQLtTest.EffectiveCompatLevel('DataProfileTest') < 110
@@ -35,7 +58,7 @@ BEGIN
 END
 GO
 
-CREATE PROCEDURE Mode2.[test Mode 2 mean against Stats]
+CREATE PROCEDURE Mode2.[test_Mode2_StatsTable_ReturnsIntegerMean]
 AS
 BEGIN
     IF tSQLtTest.EffectiveCompatLevel('DataProfileTest') < 110
@@ -55,7 +78,7 @@ BEGIN
 END
 GO
 
-CREATE PROCEDURE Mode2.[test Mode 2 stddev against Stats]
+CREATE PROCEDURE Mode2.[test_Mode2_StatsTable_ReturnsSampleStdDev]
 AS
 BEGIN
     IF tSQLtTest.EffectiveCompatLevel('DataProfileTest') < 110
@@ -75,7 +98,7 @@ BEGIN
 END
 GO
 
-CREATE PROCEDURE Mode2.[test Mode 2 median at compat 110 or higher against Stats]
+CREATE PROCEDURE Mode2.[test_Mode2_StatsTableAtCompat110OrHigher_ReturnsMedian]
 AS
 BEGIN
     IF tSQLtTest.EffectiveCompatLevel('DataProfileTest') < 110
@@ -94,7 +117,7 @@ BEGIN
 END
 GO
 
-CREATE PROCEDURE Mode2.[test Mode 2 median gracefully degrades below compat 110]
+CREATE PROCEDURE Mode2.[test_Mode2_StatsTableBelowCompat110_DropsMedianColumn]
 AS
 BEGIN
     /* No in-test ALTER DATABASE (not allowed in tSQLt's transaction). Instead profile

@@ -14,7 +14,7 @@ GO
 EXEC tSQLt.NewTestClass 'Mode3';
 GO
 
-CREATE PROCEDURE Mode3.[test Mode 3 flags Keys composite as a candidate key]
+CREATE PROCEDURE Mode3.[test_Mode3_KeysCompositeColumns_FlaggedAsCandidateKey]
 AS
 BEGIN
     CREATE TABLE #actual ( row_count INT, k1 INT, k2 INT, view_data_sql NVARCHAR(MAX) );
@@ -26,23 +26,25 @@ BEGIN
 END
 GO
 
-CREATE PROCEDURE Mode3.[test Mode 3 does not flag the non-key combo]
+CREATE PROCEDURE Mode3.[test_Mode3_NonKeyColumnCombo_ReturnsDuplicateGroup]
 AS
 BEGIN
     CREATE TABLE #actual ( row_count INT, k1 INT, v INT, view_data_sql NVARCHAR(MAX) );
     EXEC tSQLtTest.CaptureProfile @TargetTable='#actual', @TableName='Keys',
                                   @Mode=3, @ColumnList='k1,v', @ResultSetNo=2;
 
-    DECLARE @groups INT = (SELECT COUNT(*) FROM #actual);
-    EXEC tSQLt.AssertEquals 1, @groups;           -- one duplicate group
-    DECLARE @rc INT = (SELECT row_count FROM #actual);
-    EXEC tSQLt.AssertEquals 2, @rc;          -- of size 2: (k1=1, v=10)
-    DECLARE @dup INT = (SELECT COUNT(*) FROM #actual WHERE k1=1 AND v=10);
-    EXEC tSQLt.AssertEquals 1, @dup;
+    /* Assert the whole duplicate-group row rather than three separate counts/scalars:
+       (1,10) is the only combo appearing more than once, and it appears twice → one group of
+       size 2. AssertEqualsTable implicitly asserts exactly one group. view_data_sql (a generated
+       SQL string) is projected out — its population is regression-locked by the loopback test below. */
+    SELECT row_count, k1, v INTO #got FROM #actual;
+    CREATE TABLE #exp ( row_count INT, k1 INT, v INT );
+    INSERT INTO #exp VALUES (2, 1, 10);
+    EXEC tSQLt.AssertEqualsTable '#exp', '#got';
 END
 GO
 
-CREATE PROCEDURE Mode3.[test Mode 3 output captured via loopback]
+CREATE PROCEDURE Mode3.[test_Mode3_LoopbackCapture_ReturnsDetailRowset]
 AS
 BEGIN
     /* Explicit regression lock for the INSERT...EXEC nesting workaround: the loopback

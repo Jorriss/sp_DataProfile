@@ -14,7 +14,7 @@ GO
 EXEC tSQLt.NewTestClass 'Smoke';
 GO
 
-CREATE PROCEDURE Smoke.[test proc installs into master and is callable by sp_ name]
+CREATE PROCEDURE Smoke.[test_spDataProfile_InstalledInMaster_IsCallableBySpName]
 AS
 BEGIN
     IF OBJECT_ID('master.dbo.sp_DataProfile') IS NULL
@@ -22,7 +22,7 @@ BEGIN
 END
 GO
 
-CREATE PROCEDURE Smoke.[test Mode 0 default runs without error against AllTypes]
+CREATE PROCEDURE Smoke.[test_Mode0_AllTypesDefault_RunsWithoutError]
 AS
 BEGIN
     CREATE TABLE #actual (
@@ -40,7 +40,7 @@ BEGIN
 END
 GO
 
-CREATE PROCEDURE Smoke.[test Mode 0 returns the expected overview column set]
+CREATE PROCEDURE Smoke.[test_Mode0_AllTypes_ReturnsExpectedOverviewColumnSet]
 AS
 BEGIN
     CREATE TABLE #actual (
@@ -57,7 +57,7 @@ BEGIN
 END
 GO
 
-CREATE PROCEDURE Smoke.[test CaptureProfile loopback helper returns a rowset]
+CREATE PROCEDURE Smoke.[test_Mode3_CaptureProfileLoopbackHelper_ReturnsRowset]
 AS
 BEGIN
     /* Proves the Mode 3 capture path (loopback OPENROWSET → ResultSetFilter →

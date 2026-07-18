@@ -12,7 +12,7 @@ GO
 EXEC tSQLt.NewTestClass 'VersionMatrix';
 GO
 
-CREATE PROCEDURE VersionMatrix.[test compat-gated median present at 110 and skipped below]
+CREATE PROCEDURE VersionMatrix.[test_Mode2_CompatGatedMedian_PresentAt110AndSkippedBelow]
 AS
 BEGIN
     IF tSQLtTest.EffectiveCompatLevel('DataProfileTest') < 110
@@ -42,7 +42,7 @@ BEGIN
 END
 GO
 
-CREATE PROCEDURE VersionMatrix.[test server-version-gated approx distinct matches host]
+CREATE PROCEDURE VersionMatrix.[test_Mode4_ServerVersionGatedApproxDistinct_MatchesHost]
 AS
 BEGIN
     CREATE TABLE #actual (

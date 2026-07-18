@@ -380,7 +380,7 @@ BEGIN
     BEGIN
 
       SET @SQLString = N'
-        SELECT      relationship_type = ''Outgoing'',
+        SELECT      relationship_type = ''Incoming'',
                     fk_name = fk.name ,
                     parent_table = tp.name ,
                     parent_column_name = cp.name , 
@@ -402,7 +402,7 @@ BEGIN
         
         UNION ALL
         
-        SELECT      RelationshipType = ''Incoming'',
+        SELECT      RelationshipType = ''Outgoing'',
                     FKName = fk.name ,
                     ParentTable = tp.name ,
                     ParentColumnName = cp.name , 
@@ -481,7 +481,7 @@ BEGIN
                        AND    ic.is_included_column = 0
                        ORDER BY ic.index_column_id
                        FOR XML PATH (''''))
-                     , 1, 1, '''') ) ,
+                     , 1, 2, '''') ) ,
                    included_columns = 
                     (SELECT STUFF(
                       (SELECT '', '' +  c.name 
@@ -493,7 +493,7 @@ BEGIN
                       AND    ic.is_included_column = 1
                       ORDER BY ic.index_column_id
                       FOR XML PATH (''''))
-                    , 1, 1, '''') ) ,
+                    , 1, 2, '''') ) ,
                    i.filter_definition
           FROM     ' + QUOTENAME(@DatabaseName) + '.sys.indexes       i
           WHERE    i.object_id = OBJECT_ID(''' + @FromTableNameClean + ''')

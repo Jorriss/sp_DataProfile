@@ -69,6 +69,31 @@ BEGIN CATCH
 END CATCH;
 GO
 
+/* 7a. Per-test results — every test with a PASS/FAIL/SKIP marker, so the run is
+       scannable at a glance. Leading spaces are required: sqlcmd strips a leading
+       [bracketed] token from PRINT output, which would eat the marker. */
+PRINT '';
+PRINT '=== Test results ===';
+DECLARE @resultline NVARCHAR(MAX);
+DECLARE test_results CURSOR LOCAL FAST_FORWARD FOR
+    SELECT '  ['
+         + CASE WHEN Result = 'Success' THEN 'PASS'
+                WHEN Result = 'Skipped' THEN 'SKIP'
+                ELSE 'FAIL' END
+         + '] ' + Class + '.' + TestCase
+    FROM tSQLt.TestResult
+    ORDER BY Class, TestCase;
+OPEN test_results;
+FETCH NEXT FROM test_results INTO @resultline;
+WHILE @@FETCH_STATUS = 0
+BEGIN
+    PRINT @resultline;
+    FETCH NEXT FROM test_results INTO @resultline;
+END
+CLOSE test_results;
+DEALLOCATE test_results;
+GO
+
 /* 7b. List anything that didn't pass, by name — RunAll's console summary
        doesn't enumerate the failures. Reads tSQLt.TestResult, the same table
        step 8 uses for the exit code. */

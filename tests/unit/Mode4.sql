@@ -11,19 +11,34 @@ GO
 EXEC tSQLt.NewTestClass 'Mode4';
 GO
 
-CREATE PROCEDURE Mode4.[test Mode 4 distinct values on a Cardinality column]
+CREATE PROCEDURE Mode4.[test_Mode4_CardinalityColumn_ReturnsOverviewRow]
 AS
 BEGIN
-    CREATE TABLE #actual ( column_value VARCHAR(10), [Count] INT, Percentage DECIMAL(18,4) );
+    /* Overview row is result set 1. Mode 4's is wider than the other modes — it inserts
+       column_name and distinct_row_count before is_sample (sp_DataProfile.sql:1229-1235). No
+       @ApproxDistinct here, so distinct_row_count is exact. object_id is DB-dependent → non-null. */
+    CREATE TABLE #actual (
+        object_id INT, schema_name NVARCHAR(128), table_name NVARCHAR(128), row_count BIGINT,
+        column_name NVARCHAR(128), distinct_row_count BIGINT, is_sample NVARCHAR(10)
+    );
     EXEC tSQLtTest.CaptureProfile @TargetTable='#actual', @TableName='Cardinality',
-                                  @Mode=4, @ColumnList='cat_col', @ResultSetNo=2;
+                                  @Mode=4, @ColumnList='cat_col', @ResultSetNo=1;
 
-    DECLARE @rows INT = (SELECT COUNT(*) FROM #actual);
-    EXEC tSQLt.AssertEquals 3, @rows;   -- three distinct values A/B/C
+    SELECT schema_name, table_name, row_count, column_name, distinct_row_count, is_sample INTO #got FROM #actual;
+    CREATE TABLE #exp (
+        schema_name NVARCHAR(128), table_name NVARCHAR(128), row_count BIGINT,
+        column_name NVARCHAR(128), distinct_row_count BIGINT, is_sample NVARCHAR(10)
+    );
+    /* Cardinality has 6 rows; cat_col has 3 distinct values (A/B/C). is_sample='True' (default sample). */
+    INSERT INTO #exp VALUES ('dbo', 'Cardinality', 6, 'cat_col', 3, 'True');
+    EXEC tSQLt.AssertEqualsTable '#exp', '#got';
+
+    IF (SELECT object_id FROM #actual) IS NULL
+        EXEC tSQLt.Fail 'overview object_id was NULL';
 END
 GO
 
-CREATE PROCEDURE Mode4.[test Mode 4 distribution counts on a Cardinality column]
+CREATE PROCEDURE Mode4.[test_Mode4_CardinalityColumn_ReturnsDistributionCounts]
 AS
 BEGIN
     CREATE TABLE #actual ( column_value VARCHAR(10), [Count] INT, Percentage DECIMAL(18,4) );
@@ -37,7 +52,7 @@ BEGIN
 END
 GO
 
-CREATE PROCEDURE Mode4.[test Mode 4 ApproxDistinct on SQL 2019 plus is close to exact]
+CREATE PROCEDURE Mode4.[test_Mode4_ApproxDistinctOnSql2019Plus_IsCloseToExact]
 AS
 BEGIN
     IF tSQLtTest.HostMajorVersion() < 15

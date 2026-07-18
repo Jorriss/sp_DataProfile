@@ -31,6 +31,9 @@ sqlcmd -b -S (local) -i run_all.sql
 or in SSMS: **Query ▸ SQLCMD Mode**, open `run_all.sql` (from `tests/`), F5. It rebuilds fixtures + helpers + test
 classes, runs `tSQLt.RunAll`, and (with `sqlcmd -b`) exits non-zero if anything failed.
 
+After the run it prints a scannable `=== Test results ===` block listing every test with a
+`[PASS]`/`[FAIL]`/`[SKIP]` marker, followed by failure details and a summary line.
+
 Run one class while iterating: `EXEC tSQLt.Run 'Smoke';`
 
 **Run `Smoke` first.** Its `test CaptureProfile loopback helper returns a rowset` proves the Mode 3

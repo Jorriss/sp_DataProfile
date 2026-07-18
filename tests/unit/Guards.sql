@@ -18,7 +18,7 @@ GO
 EXEC tSQLt.NewTestClass 'Guards';
 GO
 
-CREATE PROCEDURE Guards.[test invalid Mode not in 0-4 returns no result set]
+CREATE PROCEDURE Guards.[test_Guards_InvalidModeNotIn0To4_ReturnsNoResultSet]
 AS
 BEGIN
     CREATE TABLE #x (dummy INT);
@@ -28,7 +28,7 @@ BEGIN
 END
 GO
 
-CREATE PROCEDURE Guards.[test Mode 3 without ColumnList returns no result set]
+CREATE PROCEDURE Guards.[test_Guards_Mode3WithoutColumnList_ReturnsNoResultSet]
 AS
 BEGIN
     CREATE TABLE #x (dummy INT);
@@ -38,7 +38,7 @@ BEGIN
 END
 GO
 
-CREATE PROCEDURE Guards.[test invalid SampleType returns no result set]
+CREATE PROCEDURE Guards.[test_Guards_InvalidSampleType_ReturnsNoResultSet]
 AS
 BEGIN
     CREATE TABLE #x (dummy INT);
@@ -49,7 +49,7 @@ BEGIN
 END
 GO
 
-CREATE PROCEDURE Guards.[test SampleValue out of range returns no result set]
+CREATE PROCEDURE Guards.[test_Guards_SampleValueOutOfRange_ReturnsNoResultSet]
 AS
 BEGIN
     CREATE TABLE #x (dummy INT);
@@ -60,7 +60,7 @@ BEGIN
 END
 GO
 
-CREATE PROCEDURE Guards.[test SQLString is null guard is not reachable via parameters]
+CREATE PROCEDURE Guards.[test_Guards_SqlStringNullGuard_NotReachableViaParameters]
 AS
 BEGIN
     /* The '@SQLString is null' severity-16 guards are internal defensive checks; there
@@ -70,7 +70,7 @@ BEGIN
 END
 GO
 
-CREATE PROCEDURE Guards.[test version floor does not fire on a supported host]
+CREATE PROCEDURE Guards.[test_Guards_SupportedHost_VersionFloorDoesNotFire]
 AS
 BEGIN
     /* The < 2012 hard-error (severity 16) cannot be provoked on a 2012+ host (version

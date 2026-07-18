@@ -11,7 +11,7 @@ GO
 EXEC tSQLt.NewTestClass 'CrossDatabase';
 GO
 
-CREATE PROCEDURE CrossDatabase.[test cross-DB call equals in-context run for Mode 1]
+CREATE PROCEDURE CrossDatabase.[test_Mode1_CrossDatabaseCall_EqualsInContextRun]
 AS
 BEGIN
     CREATE TABLE #actual (

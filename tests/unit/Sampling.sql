@@ -11,7 +11,7 @@ GO
 EXEC tSQLt.NewTestClass 'Sampling';
 GO
 
-CREATE PROCEDURE Sampling.[test SampleValue run completes and returns counts within range]
+CREATE PROCEDURE Sampling.[test_Sampling_SampleValueSpecified_ReturnsCountsWithinRange]
 AS
 BEGIN
     CREATE TABLE #actual ( column_value VARCHAR(10), [Count] INT, Percentage DECIMAL(18,4) );
