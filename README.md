@@ -53,7 +53,7 @@ The behavior is driven by `@Mode`:
 | Mode | Name | Description |
 |------|------|-------------|
 | 0 | Table Overview | Row count plus per-column type, length, precision, scale, nullability, and collation. *(default)* — [example](#examples) |
-| 1 | Column Detail | Adds unique values/ratio and a cardinality classification, NULL count/ratio, soft-null counts/ratios (blank, whitespace, zero, negative), min/max length, and min/max string value per column. — [example](#examples) |
+| 1 | Column Detail | Adds unique values/ratio and a cardinality classification, NULL count/ratio, soft-null counts/ratios (blank, whitespace, zero, negative), min/max length, and min/max value (alphabetical for string columns, numeric extremes for number columns) per column. — [example](#examples) |
 | 2 | Column Statistics | Min, max, mean, median, and standard deviation for numeric and date/time columns. — [example](#examples) |
 | 3 | Candidate Key Check | Given a `@ColumnList`, reports duplicate combinations so you can tell whether the columns form a unique key. — [example](#examples) |
 | 4 | Column Value Distribution | Given a single column, reports each distinct value with its count and percentage of the table. — [example](#examples) |
@@ -80,17 +80,17 @@ Then a per-column result set. The columns shown depend on the mode (see the [mod
 | 5 | Reputation | int | 4 | 10 | 0 | 0 |
 | … | | | | | | |
 
-**Mode 1 — Column Detail** (adds uniqueness, cardinality, NULL and soft-null metrics, and string extremes). The full detail set adds `cardinality`, the soft-null counts and ratios (`num_blank`/`blank_ratio`, `num_whitespace`/`whitespace_ratio`, `num_zero`/`zero_ratio`, `num_negative`/`negative_ratio`), and `min_value`/`max_value`; a representative slice:
+**Mode 1 — Column Detail** (adds uniqueness, cardinality, NULL and soft-null metrics, and min/max value extremes). The full detail set adds `cardinality`, the soft-null counts and ratios (`num_blank`/`blank_ratio`, `num_whitespace`/`whitespace_ratio`, `num_zero`/`zero_ratio`, `num_negative`/`negative_ratio`), and `min_value`/`max_value`; a representative slice:
 
 | name | num_unique_values | unique_ratio | cardinality | num_nulls | nulls_ratio | num_blank | num_zero | min_length | max_length | min_value | max_value |
 |------|------------------:|-------------:|-------------|----------:|------------:|----------:|---------:|-----------:|-----------:|-----------|-----------|
-| Id | 2465713 | 1.00000 | Unique | 0 | 0.00000 | | 0 | 4 | 4 | | |
+| Id | 2465713 | 1.00000 | Unique | 0 | 0.00000 | | 0 | 4 | 4 | 1 | 2465713 |
 | DisplayName | 2088731 | 0.84709 | High-cardinality | 0 | 0.00000 | 12 | | 1 | 40 | ! | ǆ |
-| Age | 78 | 0.00003 | Categorical | 1631503 | 0.66167 | | 0 | 4 | 4 | | |
+| Age | 78 | 0.00003 | Categorical | 1631503 | 0.66167 | | 0 | 4 | 4 | 1 | 99 |
 | WebsiteUrl | 356198 | 0.14446 | High-cardinality | 1900011 | 0.77058 | 40 | | 0 | 200 | | zzz.example |
 | … | | | | | | | | | | | |
 
-`cardinality` is one of *Constant* / *Binary* / *Unique* / *Categorical* / *High-cardinality*; the Categorical vs High-cardinality boundary is the distinct-count threshold `@CategoricalMaxDistinct` (default 50). Soft-null counts are populated only for the columns they apply to: blank/whitespace and min/max value on string columns, zero/negative on numeric columns; other cells are `NULL`.
+`cardinality` is one of *Constant* / *Binary* / *Unique* / *Categorical* / *High-cardinality*; the Categorical vs High-cardinality boundary is the distinct-count threshold `@CategoricalMaxDistinct` (default 50). Soft-null counts are populated only for the columns they apply to: blank/whitespace on string columns, zero/negative on numeric columns; other cells are `NULL`. `min_value`/`max_value` carry the alphabetical extremes for string columns and the numeric extremes for number columns.
 
 **Mode 2 — Column Statistics** (adds min/max/mean/median/stddev for numeric and date/time columns):
 

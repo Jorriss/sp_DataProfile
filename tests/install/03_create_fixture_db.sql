@@ -166,9 +166,12 @@ INSERT INTO dbo.SoftNumbers (n, n_nullable) VALUES
   ( 0,  4   ),
   (-1,  0   );
 /* Mode 1 asserted values:
-     n         : num_zero = 2 (rows 1,4), num_negative = 2 (rows 2,5), num_nulls = NULL
-     n_nullable: num_zero = 2 (rows 1,5), num_negative = 1 (row 3), num_nulls = 1 (row 2)
-   Both are numeric → num_blank / num_whitespace / min_value / max_value = NULL. */
+     n         : num_zero = 2 (rows 1,4), num_negative = 2 (rows 2,5), num_nulls = NULL,
+                 min_value = -5, max_value = 3
+     n_nullable: num_zero = 2 (rows 1,5), num_negative = 1 (row 3), num_nulls = 1 (row 2),
+                 min_value = -2, max_value = 4 (NULLs skipped by MIN/MAX)
+   Both are numeric → num_blank / num_whitespace = NULL; min_value / max_value are the
+   numeric extremes rendered as NVARCHAR. */
 GO
 
 /*═══════════════════════════════════════════════════════════════════════════

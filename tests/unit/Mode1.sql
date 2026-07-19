@@ -220,6 +220,31 @@ BEGIN
 END
 GO
 
+CREATE PROCEDURE Mode1.[test_Mode1_SoftNumbersTable_ReturnsMinMaxNumericValue]
+AS
+BEGIN
+    CREATE TABLE #actual (
+        column_id INT, name NVARCHAR(128), user_type NVARCHAR(128), system_type NVARCHAR(128),
+        [length] NVARCHAR(50) NULL, [precision] INT, scale INT, is_nullable BIT,
+        num_unique_values BIGINT, unique_ratio DECIMAL(25,5), cardinality NVARCHAR(30),
+        num_nulls BIGINT, nulls_ratio DECIMAL(25,5),
+        num_blank BIGINT, blank_ratio DECIMAL(25,5), num_whitespace BIGINT, whitespace_ratio DECIMAL(25,5),
+        num_zero BIGINT, zero_ratio DECIMAL(25,5), num_negative BIGINT, negative_ratio DECIMAL(25,5),
+        min_length INT, max_length INT, min_value NVARCHAR(100), max_value NVARCHAR(100)
+    );
+    EXEC tSQLtTest.CaptureProfile @TargetTable='#actual', @TableName='SoftNumbers', @Mode=1, @ResultSetNo=2;
+
+    /* n = {0,-5,3,0,-1} → numeric MIN -5, MAX 3. n_nullable = {0,NULL,-2,4,0} → MIN -2, MAX 4
+       (NULLs skipped by MIN/MAX). Rendered as NVARCHAR from the numeric @numOK path. */
+    SELECT name, min_value, max_value INTO #got FROM #actual;
+    CREATE TABLE #exp (name NVARCHAR(128), min_value NVARCHAR(100), max_value NVARCHAR(100));
+    INSERT INTO #exp VALUES
+      ('n',          '-5', '3'),
+      ('n_nullable', '-2', '4');
+    EXEC tSQLt.AssertEqualsTable '#exp', '#got';
+END
+GO
+
 CREATE PROCEDURE Mode1.[test_Mode1_CardinalityTable_ClassifiesCardinality]
 AS
 BEGIN
@@ -289,11 +314,11 @@ BEGIN
     EXEC tSQLtTest.CaptureProfile @TargetTable='#actual', @TableName='Nullable', @Mode=1, @ResultSetNo=2;
 
     /* s = {'apple',NULL,'apple','pear',NULL,'kiwi'} → alphabetical MIN 'apple', MAX 'pear'.
-       min/max value are NULL for the numeric id column. */
+       id = {1,2,3,4,5,6} (INT) → numeric MIN 1, MAX 6, rendered as NVARCHAR. */
     SELECT name, min_value, max_value INTO #got FROM #actual WHERE name IN ('id','s');
     CREATE TABLE #exp (name NVARCHAR(128), min_value NVARCHAR(100), max_value NVARCHAR(100));
     INSERT INTO #exp VALUES
-      ('id', NULL,    NULL),
+      ('id', '1',     '6'),
       ('s',  'apple', 'pear');
     EXEC tSQLt.AssertEqualsTable '#exp', '#got';
 END

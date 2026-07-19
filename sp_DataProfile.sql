@@ -643,9 +643,13 @@ BEGIN
               + N', CAST(LEFT(MAX(' + @m1_qn + N'), 100) AS NVARCHAR(100)) AS mxv' + @m1_cid;
 
           IF @numOK = 1
+            /* zero/negative counts, plus numeric min/max value cast to NVARCHAR(100) to
+               share min_value/max_value with the string path (mirrors Mode 2). */
             SET @AggSelect = @AggSelect + CASE WHEN @AggSelect <> N'' THEN N', ' ELSE N'' END
               + N'CAST(COUNT_BIG(CASE WHEN ' + @m1_qn + N' = 0 THEN 1 END) AS BIGINT) AS z' + @m1_cid
-              + N', CAST(COUNT_BIG(CASE WHEN ' + @m1_qn + N' < 0 THEN 1 END) AS BIGINT) AS ng' + @m1_cid;
+              + N', CAST(COUNT_BIG(CASE WHEN ' + @m1_qn + N' < 0 THEN 1 END) AS BIGINT) AS ng' + @m1_cid
+              + N', CAST(MIN(' + @m1_qn + N') AS NVARCHAR(100)) AS nmn' + @m1_cid
+              + N', CAST(MAX(' + @m1_qn + N') AS NVARCHAR(100)) AS nmx' + @m1_cid;
 
           /* Matching VALUES row. Typed NULLs (never bare NULL) keep the unpivoted
              columns single-typed regardless of which metrics a column qualifies for. */
@@ -660,8 +664,12 @@ BEGIN
             + CASE WHEN @lOK   = 1 THEN N'a.ws'  + @m1_cid ELSE N'CAST(NULL AS BIGINT)'        END + N', '
             + CASE WHEN @numOK = 1 THEN N'a.z'   + @m1_cid ELSE N'CAST(NULL AS BIGINT)'        END + N', '
             + CASE WHEN @numOK = 1 THEN N'a.ng'  + @m1_cid ELSE N'CAST(NULL AS BIGINT)'        END + N', '
-            + CASE WHEN @vOK   = 1 THEN N'a.mnv' + @m1_cid ELSE N'CAST(NULL AS NVARCHAR(100))' END + N', '
-            + CASE WHEN @vOK   = 1 THEN N'a.mxv' + @m1_cid ELSE N'CAST(NULL AS NVARCHAR(100))' END + N')';
+            + CASE WHEN @vOK   = 1 THEN N'a.mnv' + @m1_cid
+                   WHEN @numOK = 1 THEN N'a.nmn' + @m1_cid
+                   ELSE N'CAST(NULL AS NVARCHAR(100))' END + N', '
+            + CASE WHEN @vOK   = 1 THEN N'a.mxv' + @m1_cid
+                   WHEN @numOK = 1 THEN N'a.nmx' + @m1_cid
+                   ELSE N'CAST(NULL AS NVARCHAR(100))' END + N')';
         END
 
         FETCH NEXT FROM m1_cur INTO @m1_col_name, @m1_col_id, @m1_col_type, @m1_len, @m1_nullable;

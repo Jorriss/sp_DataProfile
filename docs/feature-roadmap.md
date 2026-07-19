@@ -27,7 +27,7 @@ Ordered roughly by value-for-effort (best first); the **#** column is the canoni
 | 9 | Table size / partitions / last-stats-update | Structural | Medium | Low |
 | 4 | Percentiles + SUM + coefficient of variation | Per-column | Medium | Low–Med |
 | 8 | PK / defaults / check / computed-column defs | Structural | Medium | Low–Med |
-| 15 | Test harness (tSQLt / golden output) | Operational | High | Medium |
+| 15 | Test harness (tSQLt / golden output) ✅ **done** | Operational | High | Medium |
 | 6 | Mode value + frequency; top-N / bottom-N | Per-column | High | Medium |
 | 7 | Data-type-mismatch detection | Per-column | Medium | Medium |
 | 10 | Orphan / referential-integrity check | Relational | Medium | Medium |
@@ -55,10 +55,10 @@ Today `num_nulls` counts `IS NULL` only, so an all-`''` or all-space column look
 
 Auto-label each column as *constant* / *binary* / *categorical* / *high-cardinality* / *unique-key-candidate*. This turns raw numbers into an at-a-glance verdict — the single most "profiler-feeling" cheap win. It's a pure derivation from the `unique_ratio` and distinct count the proc **already computes**, so it's a `CASE` expression applied at reshape time (e.g. distinct = 1 → constant; distinct = 2 → binary; unique_ratio = 1 → key candidate; distinct/rows < threshold → categorical; else high-card). No scan, no version gate — it's a new computed column on `#table_column_profile`.
 
-### 3. Min/max string *values* ✅ **Delivered**
+### 3. Min/max *values* ✅ **Delivered**
 **Importance: Medium · Difficulty: Low**
 
-*Shipped in Mode 1: `min_value`/`max_value` now carry the alphabetical extremes for string columns (truncated to 100 chars), reusing the existing columns and riding the single-pass scan. Excludes `(max)` types, where `MIN`/`MAX` aggregates are invalid.*
+*Shipped in Mode 1: `min_value`/`max_value` now carry the alphabetical extremes for string columns (truncated to 100 chars) and the numeric extremes for number columns (cast to `NVARCHAR(100)`, mirroring Mode 2), reusing the existing columns and riding the single-pass scan. String coverage excludes `(max)` types, where `MIN`/`MAX` aggregates are invalid.*
 
 Alphabetical first/last actual values, not just min/max *length* (which Mode 1 already gives). Seeing the literal extremes ("`' '`" vs "`'ZZZ test'`") surfaces stray leading spaces, sentinel values, and encoding junk instantly. Plain `MIN(col)` / `MAX(col)` on string types ride the single-pass scan alongside the existing `MIN/MAX(LEN(col))`. The only wrinkle is result width — store truncated (e.g. `LEFT(MIN(col), 100)`) so a wide value doesn't bloat `#table_column_profile`.
 
@@ -138,7 +138,7 @@ Fleshed out in a dedicated design doc: [test-harness-design.md](test-harness-des
 
 The existing "Suggested priority order" in [analysis.md](analysis.md) ends at *"Feature depth"* and *"Operational"* as broad buckets. This refines that tail into a concrete sequence, front-loading the High-importance / Low-difficulty wins that ride the single-pass scan:
 
-1. ~~**Free riders on the single-pass scan** — #1 blank/zero counts, #2 cardinality classification, #3 min/max string values. High/Medium value, near-zero marginal cost once the Phase 3 rewrite has landed.~~ ✅ **Delivered** — all three ride the Mode 1 single-pass `#agg` scan: soft-null counts (`num_blank`/`num_whitespace`/`num_zero`/`num_negative`) + ratios, a `cardinality` label tuned by `@CategoricalMaxDistinct`, and `min_value`/`max_value` string extremes.
+1. ~~**Free riders on the single-pass scan** — #1 blank/zero counts, #2 cardinality classification, #3 min/max string values. High/Medium value, near-zero marginal cost once the Phase 3 rewrite has landed.~~ ✅ **Delivered** — all three ride the Mode 1 single-pass `#agg` scan: soft-null counts (`num_blank`/`num_whitespace`/`num_zero`/`num_negative`) + ratios, a `cardinality` label tuned by `@CategoricalMaxDistinct`, and `min_value`/`max_value` extremes (alphabetical for strings, numeric for number columns).
 2. **Cheap structural adds** — #9 table size/partition DMVs, #8 constraints in overview. Rote catalog queries, no scan.
 3. **Statistical depth** — #4 percentiles/SUM/CV, reusing the median machinery.
 4. **The test harness (#15)** — do this before the harder features so the risky ones land safely.
