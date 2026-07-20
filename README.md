@@ -52,7 +52,7 @@ The behavior is driven by `@Mode`:
 
 | Mode | Name | Description |
 |------|------|-------------|
-| 0 | Table Overview | Row count plus per-column type, length, precision, scale, nullability, and collation. *(default)* — [example](#examples) |
+| 0 | Table Overview | Storage vitals (size, partitions, compression, last-stats-update) plus per-column type, length, precision, scale, nullability, and collation. *(default)* — [example](#examples) |
 | 1 | Column Detail | Adds unique values/ratio and a cardinality classification, NULL count/ratio, soft-null counts/ratios (blank, whitespace, zero, negative), min/max length, and min/max value (alphabetical for string columns, numeric extremes for number columns) per column. — [example](#examples) |
 | 2 | Column Statistics | Min, max, mean, median, and standard deviation for numeric and date/time columns. — [example](#examples) |
 | 3 | Candidate Key Check | Given a `@ColumnList`, reports duplicate combinations so you can tell whether the columns form a unique key. — [example](#examples) |
@@ -67,6 +67,14 @@ Every call first returns a **table header** result set:
 | object_id | schema_name | table_name | row_count | is_sample |
 |----------:|-------------|------------|----------:|-----------|
 | 901578250 | dbo | Users | 2465713 | False |
+
+In **Mode 0** the header carries four extra storage-vitals columns — `size_mb` (total reserved size, data + all indexes), `partition_count`, `data_compression` (`NONE`/`ROW`/`PAGE`/`COLUMNSTORE`…, or `Mixed` when partitions differ), and `last_stats_update` (most recent statistics update, `NULL` if the table has no statistics):
+
+| object_id | schema_name | table_name | row_count | is_sample | size_mb | partition_count | data_compression | last_stats_update |
+|----------:|-------------|------------|----------:|-----------|--------:|----------------:|------------------|-------------------|
+| 901578250 | dbo | Users | 2465713 | False | 412.38 | 1 | NONE | 2018-12-02 08:14:11 |
+
+These read from metadata (`sys.dm_db_partition_stats`, `sys.partitions`, `STATS_DATE()`), so they add no base-table scan.
 
 Then a per-column result set. The columns shown depend on the mode (see the [mode table](#usage) for which metrics each mode adds); real output has one row per column.
 
@@ -110,7 +118,7 @@ Then a per-column result set. The columns shown depend on the mode (see the [mod
 | `@ColumnList` | `NVARCHAR(4000)` | `NULL` | Comma-separated column list. Required for Modes 3 and 4. Mode 4 uses only the first column supplied. |
 | `@DatabaseName` | `NVARCHAR(128)` | current DB | Profile a table in another database on the same instance. |
 | `@ShowForeignKeys` | `BIT` | `0` | Also return incoming and outgoing foreign keys. |
-| `@ShowIndexes` | `BIT` | `0` | Also return indexes, including key/included columns and filter definitions. |
+| `@ShowIndexes` | `BIT` | `0` | Also return indexes, including key/included columns, filter definitions, and `size_mb` (total reserved size per index). |
 | `@SampleValue` | `INT` | `NULL` | Sample the table instead of scanning it all. Value between 0 and 100. |
 | `@SampleType` | `NVARCHAR(50)` | `'PERCENT'` | `'PERCENT'` or `'ROWS'`, applied via `TABLESAMPLE`. |
 | `@ExactRowCount` | `BIT` | `0` | Force an exact `COUNT_BIG(*)` row count. Off by default, the row count is read from table metadata (`sys.dm_db_partition_stats`) — near-instant, no scan. Sampling forces this on automatically. |

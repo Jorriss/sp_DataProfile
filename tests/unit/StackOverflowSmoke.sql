@@ -56,20 +56,27 @@ BEGIN
     BEGIN EXEC tSQLtTest.Skip 'StackOverflow.dbo.Users not present'; RETURN; END
 
     /* Capture each mode's metadata set (result set 1) = proof it ran. Modes 3/4 need a
-       column; Id works. Small sample keeps the scan cheap. */
+       column; Id works. Small sample keeps the scan cheap.
+       Mode 0's overview row carries four extra storage-vitals columns (feature #9), so it has
+       its own wider capture table; Modes 1/2/3 share the 5-column header. */
+    CREATE TABLE #m0 ( object_id INT, schema_name NVARCHAR(128), table_name NVARCHAR(128),
+                       row_count BIGINT, is_sample NVARCHAR(10),
+                       size_mb DECIMAL(18,2), partition_count INT, data_compression NVARCHAR(60), last_stats_update DATETIME2(0) );
     CREATE TABLE #m5 ( object_id INT, schema_name NVARCHAR(128), table_name NVARCHAR(128),
                        row_count BIGINT, is_sample NVARCHAR(10) );
     CREATE TABLE #m7 ( object_id INT, schema_name NVARCHAR(128), table_name NVARCHAR(128),
                        row_count BIGINT, column_name NVARCHAR(128), distinct_row_count BIGINT, is_sample NVARCHAR(10) );
 
-    EXEC tSQLtTest.CaptureProfile @TargetTable='#m5', @TableName='Users', @Mode=0, @DatabaseName='StackOverflow', @SampleValue=1, @ResultSetNo=1;
+    EXEC tSQLtTest.CaptureProfile @TargetTable='#m0', @TableName='Users', @Mode=0, @DatabaseName='StackOverflow', @SampleValue=1, @ResultSetNo=1;
     EXEC tSQLtTest.CaptureProfile @TargetTable='#m5', @TableName='Users', @Mode=1, @DatabaseName='StackOverflow', @SampleValue=1, @ResultSetNo=1;
     EXEC tSQLtTest.CaptureProfile @TargetTable='#m5', @TableName='Users', @Mode=2, @DatabaseName='StackOverflow', @SampleValue=1, @ResultSetNo=1;
     EXEC tSQLtTest.CaptureProfile @TargetTable='#m5', @TableName='Users', @Mode=3, @DatabaseName='StackOverflow', @ColumnList='Id', @SampleValue=1, @ResultSetNo=1;
     EXEC tSQLtTest.CaptureProfile @TargetTable='#m7', @TableName='Users', @Mode=4, @DatabaseName='StackOverflow', @ColumnList='Id', @SampleValue=1, @ResultSetNo=1;
 
+    DECLARE @m0rows INT = (SELECT COUNT(*) FROM #m0);
+    EXEC tSQLt.AssertEquals 1, @m0rows;   -- mode 0 metadata row
     DECLARE @m5rows INT = (SELECT COUNT(*) FROM #m5);
-    EXEC tSQLt.AssertEquals 4, @m5rows;   -- modes 0,1,2,3 metadata rows
+    EXEC tSQLt.AssertEquals 3, @m5rows;   -- modes 1,2,3 metadata rows
     DECLARE @m7rows INT = (SELECT COUNT(*) FROM #m7);
     EXEC tSQLt.AssertEquals 1, @m7rows;   -- mode 4 metadata row
 END

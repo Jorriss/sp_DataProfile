@@ -65,9 +65,14 @@ AS
 BEGIN
     /* The overview row is result set 1 — Mode 0's headline output. Pins schema/table/row_count
        and the is_sample 'True'/'False' formatting. object_id is DB-dependent → asserted non-null. */
+    /* Mode 0 result set 1 now also carries four storage-vitals columns (size_mb, partition_count,
+       data_compression, last_stats_update) — #actual must include them so the capture's
+       WITH RESULT SETS shape matches; the vitals themselves are asserted by the dedicated test
+       below, so they are captured but not projected into #got here. */
     CREATE TABLE #actual (
         object_id INT, schema_name NVARCHAR(128), table_name NVARCHAR(128),
-        row_count BIGINT, is_sample NVARCHAR(10)
+        row_count BIGINT, is_sample NVARCHAR(10),
+        size_mb DECIMAL(18,2), partition_count INT, data_compression NVARCHAR(60), last_stats_update DATETIME2(0)
     );
     EXEC tSQLtTest.CaptureProfile @TargetTable='#actual', @TableName='AllTypes', @Mode=0, @ResultSetNo=1;
 
@@ -82,6 +87,44 @@ BEGIN
 
     IF (SELECT object_id FROM #actual) IS NULL
         EXEC tSQLt.Fail 'overview object_id was NULL';
+END
+GO
+
+CREATE PROCEDURE Mode0.[test_Mode0_Child_ReturnsStorageVitals]
+AS
+BEGIN
+    /* Feature #9: the Mode 0 overview row (result set 1) reports table storage vitals.
+       Child is a committed micro-fixture on the default filegroup: single partition, no
+       compression, and a clustered PK (PK_Child) — so it has an index-backed statistics
+       object and a deterministic partition_count/compression to pin as literals.
+
+       partition_count and data_compression are deterministic → asserted as literals.
+       size_mb is environment-dependent (page allocation) but always present for a table with
+       rows, so it is asserted structurally (non-null / non-negative). last_stats_update is
+       genuinely non-deterministic: STATS_DATE returns NULL until the index's statistics are
+       actually populated (a freshly (re)created small fixture often has none yet), so it is
+       only asserted to be captured (NULL or a past date), never pinned. */
+    CREATE TABLE #actual (
+        object_id INT, schema_name NVARCHAR(128), table_name NVARCHAR(128),
+        row_count BIGINT, is_sample NVARCHAR(10),
+        size_mb DECIMAL(18,2), partition_count INT, data_compression NVARCHAR(60), last_stats_update DATETIME2(0)
+    );
+    EXEC tSQLtTest.CaptureProfile @TargetTable='#actual', @TableName='Child', @Mode=0, @ResultSetNo=1;
+
+    SELECT partition_count, data_compression INTO #got FROM #actual;
+    CREATE TABLE #exp (partition_count INT, data_compression NVARCHAR(60));
+    INSERT INTO #exp VALUES (1, 'NONE');   -- single default-filegroup partition, uncompressed
+    EXEC tSQLt.AssertEqualsTable '#exp', '#got';
+
+    /* size_mb: Child has rows, so at least one reserved page → non-null and >= 0. */
+    IF (SELECT size_mb FROM #actual) IS NULL OR (SELECT size_mb FROM #actual) < 0
+        EXEC tSQLt.Fail 'overview size_mb was NULL or negative';
+
+    /* last_stats_update: NULL when the index's statistics have not been populated yet, otherwise a
+       past date. Both are valid; assert only that it is never a future date (which would indicate a
+       wrong column / bad expression). */
+    IF (SELECT last_stats_update FROM #actual) > SYSDATETIME()
+        EXEC tSQLt.Fail 'overview last_stats_update was in the future';
 END
 GO
 
@@ -141,8 +184,12 @@ BEGIN
     /* With only @ShowIndexes=1, the index set is result set 3. Child has one index, PK_Child
        (clustered PK on child_id). Assert the whole row so the index_columns concatenation
        (STUFF/FOR XML at sp_DataProfile.sql:473-484) and the flags are actually verified. */
+    /* size_mb (feature #9, per-index reserved size) sits right after type_desc; include it in
+       #actual in that position so the capture shape matches, but keep it out of the
+       AssertEqualsTable below (it's allocation-dependent) and assert it structurally instead. */
     CREATE TABLE #actual (
-        name NVARCHAR(128), index_id INT, type_desc NVARCHAR(60), is_primary_key BIT, is_unique BIT,
+        name NVARCHAR(128), index_id INT, type_desc NVARCHAR(60), size_mb DECIMAL(18,2),
+        is_primary_key BIT, is_unique BIT,
         is_unique_constraint BIT, is_disabled BIT, fill_factor INT, index_columns NVARCHAR(MAX),
         included_columns NVARCHAR(MAX), filter_definition NVARCHAR(MAX)
     );
@@ -163,6 +210,12 @@ BEGIN
     INSERT INTO #exp VALUES
       ('PK_Child', 1, 'CLUSTERED', 1, 1, 0, 0, 0, 'child_id ASC', NULL, NULL);
     EXEC tSQLt.AssertEqualsTable '#exp', '#got';
+
+    /* Feature #9: the index row also carries size_mb (reserved size of the index). PK_Child holds
+       rows, so it has at least one reserved page → non-null and >= 0. */
+    IF (SELECT size_mb FROM #actual WHERE name = 'PK_Child') IS NULL
+       OR (SELECT size_mb FROM #actual WHERE name = 'PK_Child') < 0
+        EXEC tSQLt.Fail 'index size_mb was NULL or negative for PK_Child';
 END
 GO
 
@@ -212,7 +265,8 @@ BEGIN
         EXEC tSQLt.Fail 'FK_Child_Parent was not at result set 3 with both flags on';
 
     CREATE TABLE #ix (
-        name NVARCHAR(128), index_id INT, type_desc NVARCHAR(60), is_primary_key BIT, is_unique BIT,
+        name NVARCHAR(128), index_id INT, type_desc NVARCHAR(60), size_mb DECIMAL(18,2),
+        is_primary_key BIT, is_unique BIT,
         is_unique_constraint BIT, is_disabled BIT, fill_factor INT, index_columns NVARCHAR(MAX),
         included_columns NVARCHAR(MAX), filter_definition NVARCHAR(MAX)
     );

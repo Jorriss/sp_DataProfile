@@ -81,7 +81,8 @@ BEGIN
 
     CREATE TABLE #meta (
         object_id INT, schema_name NVARCHAR(128), table_name NVARCHAR(128),
-        row_count BIGINT, is_sample NVARCHAR(10)
+        row_count BIGINT, is_sample NVARCHAR(10),
+        size_mb DECIMAL(18,2), partition_count INT, data_compression NVARCHAR(60), last_stats_update DATETIME2(0)
     );
     EXEC tSQLtTest.CaptureProfile @TargetTable='#meta', @TableName='AllTypes', @Mode=0, @ResultSetNo=1;
     DECLARE @rows INT = (SELECT COUNT(*) FROM #meta);

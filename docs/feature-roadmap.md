@@ -24,7 +24,7 @@ Ordered roughly by value-for-effort (best first); the **#** column is the canoni
 | 1 | Blank/empty/whitespace + zero/negative counts ✅ **done** | Per-column | High | Low |
 | 2 | Cardinality classification ✅ **done** | Per-column | High | Low |
 | 3 | Min/max string *values* ✅ **done** | Per-column | Medium | Low |
-| 9 | Table size / partitions / last-stats-update | Structural | Medium | Low |
+| 9 | Table size / partitions / last-stats-update ✅ **done** | Structural | Medium | Low |
 | 4 | Percentiles + SUM + coefficient of variation | Per-column | Medium | Low–Med |
 | 8 | PK / defaults / check / computed-column defs | Structural | Medium | Low–Med |
 | 15 | Test harness (tSQLt / golden output) ✅ **done** | Operational | High | Medium |
@@ -89,8 +89,10 @@ Count rows where a `varchar` column can't `TRY_CONVERT` to its *apparent* type �
 
 Surface primary key, default constraints, check constraints, and computed-column definitions in the overview (Mode 0) — the proc already does FKs and indexes into `#table_relationship` / `#table_indexes`, so this rounds out the structural picture. Difficulty is Low–Medium: it's the **same catalog-view pattern already in use** (`sys.key_constraints`, `sys.default_constraints`, `sys.check_constraints`, `sys.computed_columns`), each qualified with `QUOTENAME(@DatabaseName)` per the cross-DB convention. Mostly rote query-writing plus a temp table (or extra columns) to hold the output.
 
-### 9. Table size / partitions / last-stats-update
+### 9. Table size / partitions / last-stats-update ✅ **Delivered**
 **Importance: Medium · Difficulty: Low**
+
+*Shipped in Mode 0: the overview header now carries `size_mb` (total reserved size, data + all indexes), `partition_count`, `data_compression` (`NONE`/`ROW`/`PAGE`/`COLUMNSTORE`…, or `Mixed` across partitions), and `last_stats_update`; all are populated from one cross-DB metadata query gated to Mode 0. When `@ShowIndexes = 1`, each index row also carries `size_mb`. One implementation note: last-stats-update uses the built-in `STATS_DATE()` rather than the roadmap's suggested `sys.dm_db_stats_properties`, because the latter needs SQL 2012 **SP1** and would risk the RTM-2012 compatibility floor — `STATS_DATE()` returns the same date and is available on every supported version.*
 
 Table size in MB, row count, data compression setting, partition count, and last-statistics-update date in the overview. These are the operational vitals a DBA wants before touching a table, and they're **cheap DMV reads** — `sys.dm_db_partition_stats` (size/rows), `sys.partitions` (compression/partition count), `sys.dm_db_stats_properties` (last update) — no base-table scan at all. The metadata row-count work in [fix-plan.md](fix-plan.md) already touches `sys.dm_db_partition_stats`, so the plumbing is partly there.
 
@@ -139,7 +141,7 @@ Fleshed out in a dedicated design doc: [test-harness-design.md](test-harness-des
 The existing "Suggested priority order" in [analysis.md](analysis.md) ends at *"Feature depth"* and *"Operational"* as broad buckets. This refines that tail into a concrete sequence, front-loading the High-importance / Low-difficulty wins that ride the single-pass scan:
 
 1. ~~**Free riders on the single-pass scan** — #1 blank/zero counts, #2 cardinality classification, #3 min/max string values. High/Medium value, near-zero marginal cost once the Phase 3 rewrite has landed.~~ ✅ **Delivered** — all three ride the Mode 1 single-pass `#agg` scan: soft-null counts (`num_blank`/`num_whitespace`/`num_zero`/`num_negative`) + ratios, a `cardinality` label tuned by `@CategoricalMaxDistinct`, and `min_value`/`max_value` extremes (alphabetical for strings, numeric for number columns).
-2. **Cheap structural adds** — #9 table size/partition DMVs, #8 constraints in overview. Rote catalog queries, no scan.
+2. **Cheap structural adds** — ~~#9 table size/partition DMVs~~ ✅ **Delivered** (Mode 0 `size_mb`/`partition_count`/`data_compression`/`last_stats_update` + per-index `size_mb`), then #8 constraints in overview. Rote catalog queries, no scan.
 3. **Statistical depth** — #4 percentiles/SUM/CV, reusing the median machinery.
 4. **The test harness (#15)** — do this before the harder features so the risky ones land safely.
 5. **Per-column heavy hitters** — #6 top-N values (opt-in, scan-per-column), #7 type-mismatch, then #5 pattern profiling (the big differentiator) and #12 PII flagging built on top of it.

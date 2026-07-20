@@ -19,7 +19,7 @@ CREATE PROCEDURE dbo.sp_DataProfile
    @CategoricalMaxDistinct INT = 50 ,
    @Verbose BIT = 0
 /*
-sp_DataProfile v0.5 - Jul 18, 2026
+sp_DataProfile v0.5 - Jul 19, 2026
 
 (C) 2026, Jorriss LLC
 Released under the MIT License. See the LICENSE file for details.
@@ -28,7 +28,8 @@ Source is located at: https://github.com/Jorriss/sp_DataProfile
 
 How to use:
 Mode:
-0 = Table Overview 
+0 = Table Overview - column list plus storage vitals: size_mb (total reserved), partition_count,
+    data_compression, last_stats_update
 1 = Column Detail - Number Unique Values, Cardinality classification, Number Nulls,
     soft-null counts (blank/whitespace/zero/negative) + ratios, Min/Max Len, Min/Max Value
 2 = Column Statistics - Min, Max, Mean, Median, Standard Deviation
@@ -36,6 +37,7 @@ Mode:
 4 = Column Value Distribution - You need to provide a single column name in @ColumnList. If more than one is provided only the first one is used.
 
 You can use @ShowIndexes = 1 and @ShowForeignKeys = 1 in any mode to see all of the indexes and foreign keys.
+@ShowIndexes = 1 also reports size_mb (total reserved size) per index.
 
 @CategoricalMaxDistinct (default 50) tunes the Mode 1 cardinality classification: an eligible column
 whose distinct count is <= this value (and that isn't Constant/Binary/Unique) is labeled 'Categorical';
@@ -81,6 +83,10 @@ BEGIN
   DECLARE @ErrorSeverity INT;
   DECLARE @ErrorState INT;
   DECLARE @RowCount BIGINT;
+  DECLARE @SizeMB DECIMAL(18,2);           -- total reserved size (data + all indexes) in MB (Mode 0)
+  DECLARE @PartitionCount INT;             -- number of partitions of the base rowset (Mode 0)
+  DECLARE @DataCompression NVARCHAR(60);   -- NONE / ROW / PAGE / COLUMNSTORE... or 'Mixed' across partitions (Mode 0)
+  DECLARE @LastStatsUpdate DATETIME2(0);   -- most recent statistics update across all stats; NULL if none (Mode 0)
   DECLARE @IsSample BIT = 0;
   DECLARE @TableSample NVARCHAR(300) = '';
   DECLARE @FromTableName NVARCHAR(300) = '';
@@ -295,6 +301,7 @@ BEGIN
       [name]                 NVARCHAR(128)  NOT NULL ,
       [index_id]             INT            NULL ,
       [type_desc]            NVARCHAR(60)   NULL ,
+      [size_mb]              DECIMAL(18,2)  NULL ,
       [is_primary_key]       BIT            NULL ,
       [is_unique]            BIT            NULL ,
       [is_unique_constraint] BIT            NULL ,
@@ -302,7 +309,7 @@ BEGIN
       [fill_factor]          TINYINT        NULL ,
       [index_columns]        NVARCHAR(max)  NULL ,
       [included_columns]     NVARCHAR(max)  NULL ,
-      [filter_definition]    NVARCHAR(max)
+      [filter_definition]    NVARCHAR(max)  NULL
     );
 
     /* Inserting data into #table_column_profile */
@@ -388,7 +395,48 @@ BEGIN
     EXEC sp_executesql @SQLString;
       
     SELECT TOP 1 @RowCount = num_rows FROM #table_column_profile;
-    
+
+    /* Table storage vitals for the Mode 0 overview: total reserved size, partition count,
+       compression setting, and last-statistics-update date. All are cheap metadata reads
+       (no base-table scan), so this is gated to Mode 0 where the values are surfaced.
+       Total size drops the index_id filter so it covers data + all indexes; partition
+       count / compression key off the base rowset (index_id IN (0,1)). Last-stats date
+       uses the built-in STATS_DATE() (available at the 2012 floor) rather than
+       sys.dm_db_stats_properties (which needs 2012 SP1). */
+    IF @Mode = 0
+    BEGIN
+      SET @SQLString = N'
+        SELECT @SizeMB_out = (SELECT SUM(ps.reserved_page_count) * 8.0 / 1024
+                              FROM ' + QUOTENAME(@DatabaseName) + '.sys.dm_db_partition_stats ps
+                              WHERE ps.object_id = OBJECT_ID(''' + @FromTableNameClean + ''')) ,
+               @PartCount_out = (SELECT COUNT(*)
+                              FROM ' + QUOTENAME(@DatabaseName) + '.sys.partitions p
+                              WHERE p.object_id = OBJECT_ID(''' + @FromTableNameClean + ''')
+                              AND   p.index_id IN (0,1)) ,
+               @Compress_out = (SELECT CASE WHEN MIN(p.data_compression_desc) = MAX(p.data_compression_desc)
+                                            THEN MIN(p.data_compression_desc) ELSE ''Mixed'' END
+                              FROM ' + QUOTENAME(@DatabaseName) + '.sys.partitions p
+                              WHERE p.object_id = OBJECT_ID(''' + @FromTableNameClean + ''')
+                              AND   p.index_id IN (0,1)) ,
+               @LastStats_out = (SELECT MAX(STATS_DATE(st.object_id, st.stats_id))
+                              FROM ' + QUOTENAME(@DatabaseName) + '.sys.stats st
+                              WHERE st.object_id = OBJECT_ID(''' + @FromTableNameClean + '''));'
+
+      IF @Verbose = 1
+      BEGIN
+        RAISERROR (N'Reading table storage vitals for the overview', 0, 1) WITH NOWAIT;
+        RAISERROR (@SQLString, 0, 1) WITH NOWAIT;
+      END
+
+      IF @SQLString IS NULL
+        RAISERROR('@SQLString is null', 16, 1);
+
+      EXEC sp_executesql @SQLString,
+           N'@SizeMB_out DECIMAL(18,2) OUTPUT, @PartCount_out INT OUTPUT, @Compress_out NVARCHAR(60) OUTPUT, @LastStats_out DATETIME2(0) OUTPUT',
+           @SizeMB_out = @SizeMB OUTPUT, @PartCount_out = @PartitionCount OUTPUT,
+           @Compress_out = @DataCompression OUTPUT, @LastStats_out = @LastStatsUpdate OUTPUT;
+    END
+
     /* Insert FK data into #table_relationship */
     IF @ShowForeignKeys = 1
     BEGIN
@@ -476,9 +524,14 @@ BEGIN
     BEGIN
 
       SET @SQLString = N'
-        SELECT     i.name , 
+        SELECT     i.name ,
                    i.index_id ,
                    i.type_desc ,
+                   size_mb =
+                    (SELECT SUM(ps.reserved_page_count) * 8.0 / 1024
+                     FROM   ' + QUOTENAME(@DatabaseName) + '.sys.dm_db_partition_stats ps
+                     WHERE  ps.object_id = i.object_id
+                     AND    ps.index_id = i.index_id) ,
                    i.is_primary_key ,
                    i.is_unique ,
                    i.is_unique_constraint ,
@@ -523,7 +576,8 @@ BEGIN
         [name] ,
         [index_id] ,
         [type_desc] ,
-        [is_primary_key] , 
+        [size_mb] ,
+        [is_primary_key] ,
         [is_unique] ,
         [is_unique_constraint] ,
         [is_disabled] ,
@@ -531,7 +585,7 @@ BEGIN
         [index_columns] ,
         [included_columns] ,
         [filter_definition]
-      )        
+      )
       EXEC sp_executesql @SQLString;
 
       IF @SQLString IS NULL 
@@ -541,7 +595,8 @@ BEGIN
         SELECT    [name] ,
                   [index_id] ,
                   [type_desc] ,
-                  [is_primary_key] , 
+                  [size_mb] ,
+                  [is_primary_key] ,
                   [is_unique] ,
                   [is_unique_constraint] ,
                   [is_disabled] ,
@@ -550,7 +605,7 @@ BEGIN
                   [included_columns] ,
                   [filter_definition]
         FROM      #table_indexes
-        ORDER BY  index_id ;'        
+        ORDER BY  index_id ;'
     END
 
     IF @Mode = 1 /* Table Detail */
@@ -1026,7 +1081,11 @@ BEGIN
              [schema_name] = @Schema ,
              [table_name] = @TableName ,
              [row_count] = @RowCount ,
-             [is_sample] = CASE @IsSample WHEN 1 THEN 'True' ELSE 'False' END;
+             [is_sample] = CASE @IsSample WHEN 1 THEN 'True' ELSE 'False' END ,
+             [size_mb] = @SizeMB ,
+             [partition_count] = @PartitionCount ,
+             [data_compression] = @DataCompression ,
+             [last_stats_update] = @LastStatsUpdate;
 
       SELECT   [column_id] ,
                [name] ,
