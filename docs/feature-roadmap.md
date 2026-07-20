@@ -25,7 +25,7 @@ Ordered roughly by value-for-effort (best first); the **#** column is the canoni
 | 2 | Cardinality classification ✅ **done** | Per-column | High | Low |
 | 3 | Min/max string *values* ✅ **done** | Per-column | Medium | Low |
 | 9 | Table size / partitions / last-stats-update ✅ **done** | Structural | Medium | Low |
-| 4 | Percentiles + SUM + coefficient of variation | Per-column | Medium | Low–Med |
+| 4 | Percentiles + coefficient of variation ✅ **done** | Per-column | Medium | Low–Med |
 | 8 | PK / defaults / check / computed-column defs | Structural | Medium | Low–Med |
 | 15 | Test harness (tSQLt / golden output) ✅ **done** | Operational | High | Medium |
 | 6 | Mode value + frequency; top-N / bottom-N | Per-column | High | Medium |
@@ -62,10 +62,14 @@ Auto-label each column as *constant* / *binary* / *categorical* / *high-cardinal
 
 Alphabetical first/last actual values, not just min/max *length* (which Mode 1 already gives). Seeing the literal extremes ("`' '`" vs "`'ZZZ test'`") surfaces stray leading spaces, sentinel values, and encoding junk instantly. Plain `MIN(col)` / `MAX(col)` on string types ride the single-pass scan alongside the existing `MIN/MAX(LEN(col))`. The only wrinkle is result width — store truncated (e.g. `LEFT(MIN(col), 100)`) so a wide value doesn't bloat `#table_column_profile`.
 
-### 4. Percentiles + SUM + coefficient of variation
+### 4. Percentiles + coefficient of variation ✅ **Delivered**
 **Importance: Medium · Difficulty: Low–Medium**
 
-Extend the median to a full spread: P25/P75/P90/P95/P99, plus `SUM` and coefficient of variation (`stddev / mean`) for numerics. Percentiles are what tell you whether "average order = $80" hides a long tail. The proc already has the `PERCENTILE_DISC` machinery for median in Mode 2, so this is more of the same expression, gated on the **same compatibility level 110+** check that already guards median (and degrades gracefully below it). `SUM` and coefficient of variation are trivial aggregates that ride the Mode 2 stats scan. Difficulty nudges above "Low" only because percentiles use window functions that can't share the scalar-aggregate scan (same constraint the median already lives with).
+*Shipped in Mode 2: `p25`/`p75`/`p90`/`p95`/`p99` join `median` on Batch B's single `PERCENTILE_DISC` scan (same compat-110 gate — dropped gracefully below it), and `coeff_variation` (`std_dev / mean`, `NULLIF`-guarded against a zero mean) rides Batch A's scalar-aggregate scan so it survives below compat 110. No `SUM` (see below).*
+
+Extend the median to a full spread: P25/P75/P90/P95/P99, plus coefficient of variation (`stddev / mean`) for numerics. Percentiles are what tell you whether "average order = $80" hides a long tail. The proc already has the `PERCENTILE_DISC` machinery for median in Mode 2, so this is more of the same expression, gated on the **same compatibility level 110+** check that already guards median (and degrades gracefully below it). Coefficient of variation is a trivial derivation from the `mean`/`std_dev` already computed on the Mode 2 scalar-aggregate scan (guard `mean = 0` with `NULLIF`). Difficulty nudges above "Low" only because percentiles use window functions that can't share the scalar-aggregate scan (same constraint the median already lives with).
+
+**`SUM` deliberately excluded.** An earlier draft included `SUM`, but it's the one stat here that breaks under sampling: percentiles, mean, std_dev, and CV are *intensive* (ratio/position) statistics a `TABLESAMPLE` estimates reasonably, whereas `SUM` is *extensive* — the sum of a 10% sample is ~10% of the true total, not an estimate of it, and page-based `TABLESAMPLE` gives no reliable fraction to rescale by. Rather than special-case it (populate when full, `NULL` when sampled — a column that silently changes meaning by parameter), it's dropped. Every remaining stat degrades gracefully under sampling exactly the way median already does.
 
 ### 5. Pattern & format profiling
 **Importance: High · Difficulty: High**
@@ -142,7 +146,7 @@ The existing "Suggested priority order" in [analysis.md](analysis.md) ends at *"
 
 1. ~~**Free riders on the single-pass scan** — #1 blank/zero counts, #2 cardinality classification, #3 min/max string values. High/Medium value, near-zero marginal cost once the Phase 3 rewrite has landed.~~ ✅ **Delivered** — all three ride the Mode 1 single-pass `#agg` scan: soft-null counts (`num_blank`/`num_whitespace`/`num_zero`/`num_negative`) + ratios, a `cardinality` label tuned by `@CategoricalMaxDistinct`, and `min_value`/`max_value` extremes (alphabetical for strings, numeric for number columns).
 2. **Cheap structural adds** — ~~#9 table size/partition DMVs~~ ✅ **Delivered** (Mode 0 `size_mb`/`partition_count`/`data_compression`/`last_stats_update` + per-index `size_mb`), then #8 constraints in overview. Rote catalog queries, no scan.
-3. **Statistical depth** — #4 percentiles/SUM/CV, reusing the median machinery.
+3. ~~**Statistical depth** — #4 percentiles/CV, reusing the median machinery.~~ ✅ **Delivered** — Mode 2 gains `p25`/`p75`/`p90`/`p95`/`p99` (on the median's `PERCENTILE_DISC` scan, same compat-110 gate) and `coeff_variation` (on Batch A's scalar-aggregate scan, so always present).
 4. **The test harness (#15)** — do this before the harder features so the risky ones land safely.
 5. **Per-column heavy hitters** — #6 top-N values (opt-in, scan-per-column), #7 type-mismatch, then #5 pattern profiling (the big differentiator) and #12 PII flagging built on top of it.
 6. **Relational & operational** — #10 orphan checks, then #13 history table → #14 batch mode as a pair.

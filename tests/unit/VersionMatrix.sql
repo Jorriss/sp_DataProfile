@@ -18,22 +18,25 @@ BEGIN
     IF tSQLtTest.EffectiveCompatLevel('DataProfileTest') < 110
     BEGIN EXEC tSQLtTest.Skip 'host effective compat < 110 — cannot assert the >=110 side'; RETURN; END
 
-    /* >= 110 side: median column present and populated. */
+    /* >= 110 side: median + percentile columns present and populated. */
     CREATE TABLE #hi (
         column_id INT, name NVARCHAR(128), user_type NVARCHAR(128), system_type NVARCHAR(128),
         [length] NVARCHAR(50) NULL, [precision] INT, scale INT, is_nullable BIT,
         min_value NVARCHAR(100), max_value NVARCHAR(100), mean NVARCHAR(100),
-        median NVARCHAR(100), std_dev NVARCHAR(100)
+        median NVARCHAR(100), p25 NVARCHAR(100), p75 NVARCHAR(100), p90 NVARCHAR(100),
+        p95 NVARCHAR(100), p99 NVARCHAR(100), std_dev NVARCHAR(100), coeff_variation NVARCHAR(100)
     );
     EXEC tSQLtTest.CaptureProfile @TargetTable='#hi', @TableName='Stats', @Mode=2, @ResultSetNo=2;
     DECLARE @median NVARCHAR(100) = (SELECT median FROM #hi WHERE name='val');
     EXEC tSQLt.AssertEqualsString '3', @median;
 
-    /* < 110 side: median column dropped → the 12-column (no median) shape captures cleanly. */
+    /* < 110 side: median + percentile columns dropped → the 13-column (no median/percentiles,
+       but coeff_variation retained) shape captures cleanly. */
     CREATE TABLE #lo (
         column_id INT, name NVARCHAR(128), user_type NVARCHAR(128), system_type NVARCHAR(128),
         [length] NVARCHAR(50) NULL, [precision] INT, scale INT, is_nullable BIT,
-        min_value NVARCHAR(100), max_value NVARCHAR(100), mean NVARCHAR(100), std_dev NVARCHAR(100)
+        min_value NVARCHAR(100), max_value NVARCHAR(100), mean NVARCHAR(100),
+        std_dev NVARCHAR(100), coeff_variation NVARCHAR(100)
     );
     EXEC tSQLtTest.CaptureProfile @TargetTable='#lo', @TableName='Stats', @Mode=2,
                                   @DatabaseName='DataProfileTest_Compat100', @ResultSetNo=2;

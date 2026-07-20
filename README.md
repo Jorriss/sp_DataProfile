@@ -10,7 +10,7 @@ Point a single stored procedure at a table and get an instant profile of your da
 
 - Column metadata: type, length, precision, scale, nullability, collation.
 - NULL and uniqueness: distinct/unique counts and ratios, NULL counts and ratios, min/max length.
-- Statistics: min, max, mean, median, and standard deviation for numeric and date/time columns.
+- Statistics: min, max, mean, median, percentiles (P25/P75/P90/P95/P99), standard deviation, and coefficient of variation for numeric and date/time columns.
 - Candidate key checks: tell whether a set of columns forms a unique key.
 - Value distributions: every distinct value in a column with its count and percentage.
 - Optional foreign keys and indexes, in any mode.
@@ -38,7 +38,7 @@ Point a single stored procedure at a table and get an instant profile of your da
 ## Requirements
 
 - SQL Server 2012 or higher (the proc refuses to run on 2008 R2 and older).
-- Median calculations (Mode 2) require compatibility level 110 or higher, since they rely on `PERCENTILE_DISC`. Compatibility level is per-database, so a database set to a lower compat level runs fine but skips the median column.
+- Median and percentile calculations (Mode 2) require compatibility level 110 or higher, since they rely on `PERCENTILE_DISC`. Compatibility level is per-database, so a database set to a lower compat level runs fine but skips the median and percentile columns (mean, standard deviation, and coefficient of variation are still reported).
 
 The examples below target the [StackOverflow sample database](https://www.brentozar.com/archive/2015/10/how-to-download-the-stack-overflow-database-via-bittorrent/) (`Users`, `Posts`), so you can reproduce them as-is.
 
@@ -54,7 +54,7 @@ The behavior is driven by `@Mode`:
 |------|------|-------------|
 | 0 | Table Overview | Storage vitals (size, partitions, compression, last-stats-update) plus per-column type, length, precision, scale, nullability, and collation. *(default)* — [example](#examples) |
 | 1 | Column Detail | Adds unique values/ratio and a cardinality classification, NULL count/ratio, soft-null counts/ratios (blank, whitespace, zero, negative), min/max length, and min/max value (alphabetical for string columns, numeric extremes for number columns) per column. — [example](#examples) |
-| 2 | Column Statistics | Min, max, mean, median, and standard deviation for numeric and date/time columns. — [example](#examples) |
+| 2 | Column Statistics | Min, max, mean, median, percentiles (P25/P75/P90/P95/P99), standard deviation, and coefficient of variation for numeric and date/time columns. — [example](#examples) |
 | 3 | Candidate Key Check | Given a `@ColumnList`, reports duplicate combinations so you can tell whether the columns form a unique key. — [example](#examples) |
 | 4 | Column Value Distribution | Given a single column, reports each distinct value with its count and percentage of the table. — [example](#examples) |
 
@@ -100,14 +100,50 @@ Then a per-column result set. The columns shown depend on the mode (see the [mod
 
 `cardinality` is one of *Constant* / *Binary* / *Unique* / *Categorical* / *High-cardinality*; the Categorical vs High-cardinality boundary is the distinct-count threshold `@CategoricalMaxDistinct` (default 50). Soft-null counts are populated only for the columns they apply to: blank/whitespace on string columns, zero/negative on numeric columns; other cells are `NULL`. `min_value`/`max_value` carry the alphabetical extremes for string columns and the numeric extremes for number columns.
 
-**Mode 2 — Column Statistics** (adds min/max/mean/median/stddev for numeric and date/time columns):
+**Mode 2 — Column Statistics** (adds min/max/mean/median/percentiles/stddev/CV for numeric and date/time columns):
 
-| name | min_value | max_value | mean | median | std_dev |
-|------|-----------|-----------|------|--------|---------|
-| Reputation | 1 | 1041991 | 137.14 | 1 | 2103.55 |
-| Age | 13 | 99 | 34.82 | 32 | 12.91 |
-| CreationDate | 2008-07-31 | 2018-12-02 | | | |
+| name | min_value | max_value | mean | median | p25 | p75 | p90 | p95 | p99 | std_dev | coeff_variation |
+|------|-----------|-----------|------|--------|-----|-----|-----|-----|-----|---------|-----------------|
+| Reputation | 1 | 1041991 | 137.14 | 1 | 1 | 101 | 421 | 1096 | 6874 | 2103.55 | 15.34 |
+| Age | 13 | 99 | 34.82 | 32 | 25 | 43 | 54 | 60 | 71 | 12.91 | 0.37 |
+| CreationDate | 2008-07-31 | 2018-12-02 | | | | | | | | | |
+| … | | | | | | | | | | | |
+
+**Percentiles (`p25` / `p75` / `p90` / `p95` / `p99`)** — a percentile is the value below which that percent of the rows fall. `p90 = 421` means 90% of the values are ≤ 421 and the top 10% are larger. Together with `median` (which is the 50th percentile) they describe the *shape* of the distribution, not just its center:
+
+- `p25` and `p75` are the lower and upper quartiles. The gap between them (the interquartile range) is where the middle half of the data lives — a compact, outlier-resistant measure of spread.
+- `p90` / `p95` / `p99` probe the upper tail. When they sit far above the `mean` and `median` — as with `Reputation` above (median 1, mean 137, p99 6,874) — the column is heavily right-skewed: a large mass of small values plus a long tail of big ones. When mean ≈ median and the percentiles rise evenly — as with `Age` — the distribution is roughly symmetric.
+
+*How to use them:* compare `mean` against `median` to detect skew, then read the percentiles to size it. They're the right basis for capacity and SLA thinking ("what does the 95th-percentile order look like?") and for setting outlier thresholds, because unlike `mean`/`std_dev` they aren't dragged around by a handful of extreme values. Percentiles are computed with `PERCENTILE_DISC`, so they return an actual value present in the column (never an interpolated in-between one) and share `median`'s compatibility-level-110 requirement — below compat 110 these six columns are dropped.
+
+**Coefficient of variation (`coeff_variation`)** — the standard deviation expressed as a fraction of the mean (`std_dev / mean`). Because it's unitless, it lets you compare relative variability across columns whose scales are wildly different — you can't tell whether a `std_dev` of 12.91 is "a lot" without knowing the mean, but a CV of 0.37 (Age) versus 15.34 (Reputation) says plainly that reputation is *far* more dispersed relative to its typical value than age is.
+
+*How to use it:* read it as "spread per unit of average." Rules of thumb: below ~0.1 the column is nearly constant; around 1 the spread is comparable to the mean; well above 1 signals a highly volatile or long-tailed column worth a closer look. It's the quickest single number for ranking columns by how noisy they are. Two caveats: it's only meaningful for ratio-scale numerics (not dates), and it's undefined when the mean is 0 — in that case the column reports `NULL` rather than dividing by zero. Unlike the percentiles, CV rides the scalar-aggregate scan, so it's always present, including below compat 110.
+
+**Mode 3 — Candidate Key Check** (given a `@ColumnList`, tests whether those columns form a unique key). The result set has one row per **duplicated** value combination — a combination that appears more than once — ordered by `row_count` descending. Each row carries `row_count` (how many rows share that combination), the profiled columns themselves, and `view_data_sql`, a ready-to-run `SELECT` that pulls the offending rows:
+
+| row_count | DisplayName | Location | WebsiteUrl | CreationDate | view_data_sql |
+|----------:|-------------|----------|------------|--------------|---------------|
+| 4 | user123 | | | 2011-05-19 06:12:33 | SELECT * FROM [dbo].[Users]... |
+| 2 | Alex | London, UK | | 2013-02-08 14:55:01 | SELECT * FROM [dbo].[Users]... |
 | … | | | | | |
+
+An **empty result set means the columns form a unique key** — no combination repeats. Any rows returned are the collisions that disqualify the combination as a key; `row_count` tells you how badly each one collides.
+
+**Mode 4 — Column Value Distribution** (given a single column — the first one in `@ColumnList` — tallies each distinct value). The table header adds two columns, `column_name` (the column being distributed) and `distinct_row_count` (how many distinct values it holds):
+
+| object_id | schema_name | table_name | row_count | column_name | distinct_row_count | is_sample |
+|----------:|-------------|------------|----------:|-------------|-------------------:|-----------|
+| 1330103555 | dbo | Posts | 17142169 | PostTypeId | 8 | False |
+
+Then one row per distinct value, ordered by `Percentage` descending, with its `Count` and its `Percentage` of the table:
+
+| PostTypeId | Count | Percentage |
+|-----------:|------:|-----------:|
+| 2 | 9760000 | 56.9350 |
+| 1 | 6120000 | 35.7016 |
+| 3 | 620000 | 3.6167 |
+| … | | |
 
 ## Parameters
 

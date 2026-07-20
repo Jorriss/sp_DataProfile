@@ -53,7 +53,8 @@ BEGIN
         column_id INT, name NVARCHAR(128), user_type NVARCHAR(128), system_type NVARCHAR(128),
         [length] NVARCHAR(50) NULL, [precision] INT, scale INT, is_nullable BIT,
         min_value NVARCHAR(100), max_value NVARCHAR(100), mean NVARCHAR(100),
-        median NVARCHAR(100), std_dev NVARCHAR(100)
+        median NVARCHAR(100), p25 NVARCHAR(100), p75 NVARCHAR(100), p90 NVARCHAR(100),
+        p95 NVARCHAR(100), p99 NVARCHAR(100), std_dev NVARCHAR(100), coeff_variation NVARCHAR(100)
     );
     EXEC tSQLtTest.CaptureProfile @TargetTable='#actual', @TableName='[Odd Names]', @Mode=2, @ResultSetNo=2;
 

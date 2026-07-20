@@ -32,7 +32,7 @@ Mode:
     data_compression, last_stats_update
 1 = Column Detail - Number Unique Values, Cardinality classification, Number Nulls,
     soft-null counts (blank/whitespace/zero/negative) + ratios, Min/Max Len, Min/Max Value
-2 = Column Statistics - Min, Max, Mean, Median, Standard Deviation
+2 = Column Statistics - Min, Max, Mean, Median, P25/P75/P90/P95/P99, Standard Deviation, Coefficient of Variation
 3 = Candidate Key Check - You need a @ColumnList with this
 4 = Column Value Distribution - You need to provide a single column name in @ColumnList. If more than one is provided only the first one is used.
 
@@ -283,7 +283,13 @@ BEGIN
       [max_value]          NVARCHAR(100) NULL ,
       [mean]               NVARCHAR(100) NULL ,
       [median]             NVARCHAR(100) NULL ,
-      [std_dev]            NVARCHAR(100) NULL
+      [p25]                NVARCHAR(100) NULL ,
+      [p75]                NVARCHAR(100) NULL ,
+      [p90]                NVARCHAR(100) NULL ,
+      [p95]                NVARCHAR(100) NULL ,
+      [p99]                NVARCHAR(100) NULL ,
+      [std_dev]            NVARCHAR(100) NULL ,
+      [coeff_variation]    NVARCHAR(100) NULL
     );
 
     CREATE TABLE #table_relationship (
@@ -669,14 +675,16 @@ BEGIN
         IF @uOK = 1 OR @nOK = 1 OR @lOK = 1 OR @numOK = 1
         BEGIN
           IF @uOK = 1
-            SET @AggSelect = @AggSelect + CASE WHEN @AggSelect <> N'' THEN N', ' ELSE N'' END
+            SET @AggSelect = @AggSelect + CASE WHEN @AggSelect <> N'' THEN N',
+          ' ELSE N'' END
               + N'CAST(' + CASE WHEN @ApproxDistinct = 1 AND @SQLMajorVersion >= 15
                                 THEN N'APPROX_COUNT_DISTINCT(' + @m1_qn + N')'
                                 ELSE N'COUNT(DISTINCT ' + @m1_qn + N')' END
               + N' AS BIGINT) AS u' + @m1_cid;
 
           IF @nOK = 1
-            SET @AggSelect = @AggSelect + CASE WHEN @AggSelect <> N'' THEN N', ' ELSE N'' END
+            SET @AggSelect = @AggSelect + CASE WHEN @AggSelect <> N'' THEN N',
+          ' ELSE N'' END
               + N'CAST(COUNT_BIG(CASE WHEN ' + @m1_qn + N' IS NULL THEN 1 END) AS BIGINT) AS n' + @m1_cid;
 
           IF @lOK = 1
@@ -685,26 +693,29 @@ BEGIN
                comparisons, so col = '' matches whitespace-only strings too — distinguish with
                DATALENGTH (truly empty) vs LEN = 0 AND DATALENGTH > 0 (all-space, non-empty).
                LEN strips trailing spaces only, so this catches space chars, not tabs/newlines. */
-            SET @AggSelect = @AggSelect + CASE WHEN @AggSelect <> N'' THEN N', ' ELSE N'' END
-              + N'CAST(MIN(LEN(' + @m1_qn + N')) AS INT) AS mnl' + @m1_cid
-              + N', CAST(MAX(LEN(' + @m1_qn + N')) AS INT) AS mxl' + @m1_cid
-              + N', CAST(COUNT_BIG(CASE WHEN DATALENGTH(' + @m1_qn + N') = 0 THEN 1 END) AS BIGINT) AS bl' + @m1_cid
-              + N', CAST(COUNT_BIG(CASE WHEN LEN(' + @m1_qn + N') = 0 AND DATALENGTH(' + @m1_qn + N') > 0 THEN 1 END) AS BIGINT) AS ws' + @m1_cid;
+            SET @AggSelect = @AggSelect + CASE WHEN @AggSelect <> N'' THEN N',
+          ' ELSE N'' END
+              + N'CAST(MIN(LEN(' + @m1_qn + N')) AS INT) AS mnl' + @m1_cid + N',
+          ' + N'CAST(MAX(LEN(' + @m1_qn + N')) AS INT) AS mxl' + @m1_cid + N',
+          ' + N'CAST(COUNT_BIG(CASE WHEN DATALENGTH(' + @m1_qn + N') = 0 THEN 1 END) AS BIGINT) AS bl' + @m1_cid + N',
+          ' + N'CAST(COUNT_BIG(CASE WHEN LEN(' + @m1_qn + N') = 0 AND DATALENGTH(' + @m1_qn + N') > 0 THEN 1 END) AS BIGINT) AS ws' + @m1_cid;
 
           IF @vOK = 1
             /* min/max string value, truncated to 100 chars to fit min_value/max_value. */
-            SET @AggSelect = @AggSelect + CASE WHEN @AggSelect <> N'' THEN N', ' ELSE N'' END
-              + N'CAST(LEFT(MIN(' + @m1_qn + N'), 100) AS NVARCHAR(100)) AS mnv' + @m1_cid
-              + N', CAST(LEFT(MAX(' + @m1_qn + N'), 100) AS NVARCHAR(100)) AS mxv' + @m1_cid;
+            SET @AggSelect = @AggSelect + CASE WHEN @AggSelect <> N'' THEN N',
+          ' ELSE N'' END
+              + N'CAST(LEFT(MIN(' + @m1_qn + N'), 100) AS NVARCHAR(100)) AS mnv' + @m1_cid + N',
+          ' + N'CAST(LEFT(MAX(' + @m1_qn + N'), 100) AS NVARCHAR(100)) AS mxv' + @m1_cid;
 
           IF @numOK = 1
             /* zero/negative counts, plus numeric min/max value cast to NVARCHAR(100) to
                share min_value/max_value with the string path (mirrors Mode 2). */
-            SET @AggSelect = @AggSelect + CASE WHEN @AggSelect <> N'' THEN N', ' ELSE N'' END
-              + N'CAST(COUNT_BIG(CASE WHEN ' + @m1_qn + N' = 0 THEN 1 END) AS BIGINT) AS z' + @m1_cid
-              + N', CAST(COUNT_BIG(CASE WHEN ' + @m1_qn + N' < 0 THEN 1 END) AS BIGINT) AS ng' + @m1_cid
-              + N', CAST(MIN(' + @m1_qn + N') AS NVARCHAR(100)) AS nmn' + @m1_cid
-              + N', CAST(MAX(' + @m1_qn + N') AS NVARCHAR(100)) AS nmx' + @m1_cid;
+            SET @AggSelect = @AggSelect + CASE WHEN @AggSelect <> N'' THEN N',
+          ' ELSE N'' END
+              + N'CAST(COUNT_BIG(CASE WHEN ' + @m1_qn + N' = 0 THEN 1 END) AS BIGINT) AS z' + @m1_cid + N',
+          ' + N'CAST(COUNT_BIG(CASE WHEN ' + @m1_qn + N' < 0 THEN 1 END) AS BIGINT) AS ng' + @m1_cid + N',
+          ' + N'CAST(MIN(' + @m1_qn + N') AS NVARCHAR(100)) AS nmn' + @m1_cid + N',
+          ' + N'CAST(MAX(' + @m1_qn + N') AS NVARCHAR(100)) AS nmx' + @m1_cid;
 
           /* Matching VALUES row. Typed NULLs (never bare NULL) keep the unpivoted
              columns single-typed regardless of which metrics a column qualifies for. */
@@ -832,13 +843,23 @@ BEGIN
                                THEN N'CAST(' + @s2_qn + N' AS BIGINT)'
                                ELSE @s2_qn END;
 
-        /* Batch A: min/max for every column; mean/std_dev for numerics only. */
-        SET @StatSelect = @StatSelect + CASE WHEN @StatSelect <> N'' THEN N', ' ELSE N'' END
-          + N'CAST(MIN(' + @s2_qn + N') AS NVARCHAR(100)) AS mn' + @s2_cid
-          + N', CAST(MAX(' + @s2_qn + N') AS NVARCHAR(100)) AS mx' + @s2_cid
+        /* Batch A: min/max for every column; mean/std_dev for numerics only.
+           Each aggregate is separated by a comma-newline (mirroring @StatUnpivot
+           below) so the @Verbose printout of the #agg SELECT lists one metric per
+           line instead of a single very long line. */
+        SET @StatSelect = @StatSelect + CASE WHEN @StatSelect <> N'' THEN N',
+          ' ELSE N'' END
+          + N'      CAST(MIN(' + @s2_qn + N') AS NVARCHAR(100)) AS mn' + @s2_cid + N',
+          ' + N'      CAST(MAX(' + @s2_qn + N') AS NVARCHAR(100)) AS mx' + @s2_cid
           + CASE WHEN @s2_isnum = 1 THEN
-              N', CAST(AVG(' + @s2_castcol + N') AS NVARCHAR(100)) AS av' + @s2_cid
-            + N', CAST(CAST(STDEV(' + @s2_qn + N') AS NUMERIC(18,4)) AS NVARCHAR(100)) AS sd' + @s2_cid
+              N',
+          ' + N'      CAST(AVG(' + @s2_castcol + N') AS NVARCHAR(100)) AS av' + @s2_cid + N',
+          ' + N'      CAST(CAST(STDEV(' + @s2_qn + N') AS NUMERIC(18,4)) AS NVARCHAR(100)) AS sd' + @s2_cid
+            /* Coefficient of variation = STDEV/mean. STDEV is float, so the division
+               is float (no integer truncation); NULLIF guards divide-by-zero when the
+               mean is 0. */
+            + N',
+          ' + N'      CAST(CAST(STDEV(' + @s2_qn + N') / NULLIF(AVG(' + @s2_castcol + N'), 0) AS NUMERIC(18,4)) AS NVARCHAR(100)) AS cv' + @s2_cid
             ELSE N'' END;
 
         /* Matching VALUES row. Typed NULLs (never bare NULL) keep the unpivoted
@@ -847,18 +868,29 @@ BEGIN
             ' ELSE N'' END
           + N'(' + @s2_cid + N', a.mn' + @s2_cid + N', a.mx' + @s2_cid + N', '
           + CASE WHEN @s2_isnum = 1 THEN N'a.av' + @s2_cid ELSE N'CAST(NULL AS NVARCHAR(100))' END + N', '
-          + CASE WHEN @s2_isnum = 1 THEN N'a.sd' + @s2_cid ELSE N'CAST(NULL AS NVARCHAR(100))' END + N')';
+          + CASE WHEN @s2_isnum = 1 THEN N'a.sd' + @s2_cid ELSE N'CAST(NULL AS NVARCHAR(100))' END + N', '
+          + CASE WHEN @s2_isnum = 1 THEN N'a.cv' + @s2_cid ELSE N'CAST(NULL AS NVARCHAR(100))' END + N')';
 
         /* Batch B: median, numeric columns only, and only where PERCENTILE_DISC is
            supported (compat level 110+ — matching the prior per-column gate). */
         IF @s2_isnum = 1 AND @SQLCompatLevel >= 110
         BEGIN
-          SET @MedSelect = @MedSelect + CASE WHEN @MedSelect <> N'' THEN N', ' ELSE N'' END
-            + N'CAST(PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY ' + @s2_qn + N') OVER () AS NVARCHAR(100)) AS md' + @s2_cid;
+          /* median + the P25/P75/P90/P95/P99 spread — all PERCENTILE_DISC window
+             functions sharing Batch B's single scan. */
+          SET @MedSelect = @MedSelect + CASE WHEN @MedSelect <> N'' THEN N',
+          ' ELSE N'' END
+            + N'      CAST(PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY ' + @s2_qn + N') OVER () AS NVARCHAR(100)) AS md' + @s2_cid + N',
+          ' + N'      CAST(PERCENTILE_DISC(0.25) WITHIN GROUP (ORDER BY ' + @s2_qn + N') OVER () AS NVARCHAR(100)) AS p25_' + @s2_cid + N',
+          ' + N'      CAST(PERCENTILE_DISC(0.75) WITHIN GROUP (ORDER BY ' + @s2_qn + N') OVER () AS NVARCHAR(100)) AS p75_' + @s2_cid + N',
+          ' + N'      CAST(PERCENTILE_DISC(0.90) WITHIN GROUP (ORDER BY ' + @s2_qn + N') OVER () AS NVARCHAR(100)) AS p90_' + @s2_cid + N',
+          ' + N'      CAST(PERCENTILE_DISC(0.95) WITHIN GROUP (ORDER BY ' + @s2_qn + N') OVER () AS NVARCHAR(100)) AS p95_' + @s2_cid + N',
+          ' + N'      CAST(PERCENTILE_DISC(0.99) WITHIN GROUP (ORDER BY ' + @s2_qn + N') OVER () AS NVARCHAR(100)) AS p99_' + @s2_cid;
 
           SET @MedUnpivot = @MedUnpivot + CASE WHEN @MedUnpivot <> N'' THEN N',
             ' ELSE N'' END
-            + N'(' + @s2_cid + N', a.md' + @s2_cid + N')';
+            + N'(' + @s2_cid + N', a.md' + @s2_cid
+            + N', a.p25_' + @s2_cid + N', a.p75_' + @s2_cid + N', a.p90_' + @s2_cid
+            + N', a.p95_' + @s2_cid + N', a.p99_' + @s2_cid + N')';
         END
 
         FETCH NEXT FROM stats_cur INTO @stats_col_name, @stats_col_num, @stats_col_type;
@@ -878,15 +910,16 @@ BEGIN
           FROM ' + @FromTableName + N';
 
           UPDATE p
-          SET min_value = v.minv ,
-              max_value = v.maxv ,
-              mean      = v.meanv ,
-              std_dev   = v.sdv
+          SET min_value       = v.minv ,
+              max_value       = v.maxv ,
+              mean            = v.meanv ,
+              std_dev         = v.sdv ,
+              coeff_variation = v.cvv
           FROM #table_column_profile p
           JOIN #agg a ON 1 = 1
           CROSS APPLY (VALUES
             ' + @StatUnpivot + N'
-          ) v(column_id, minv, maxv, meanv, sdv)
+          ) v(column_id, minv, maxv, meanv, sdv, cvv)
           WHERE v.column_id = p.column_id;';
 
         IF @Verbose = 1
@@ -913,12 +946,17 @@ BEGIN
           FROM ' + @FromTableName + N';
 
           UPDATE p
-          SET median = v.med
+          SET median = v.med ,
+              p25    = v.p25 ,
+              p75    = v.p75 ,
+              p90    = v.p90 ,
+              p95    = v.p95 ,
+              p99    = v.p99
           FROM #table_column_profile p
           JOIN #median a ON 1 = 1
           CROSS APPLY (VALUES
             ' + @MedUnpivot + N'
-          ) v(column_id, med)
+          ) v(column_id, med, p25, p75, p90, p95, p99)
           WHERE v.column_id = p.column_id;';
 
         IF @Verbose = 1
@@ -1252,13 +1290,19 @@ BEGIN
                  [min_value] ,
                  [max_value] ,
                  [mean] ,'
-  
+
       IF @SQLCompatLevel >= 110
         SET @SQLString = @SQLString + N'
-                 [median] ,'
-  
-      SET @SQLString = @SQLString + N'             
-                 [std_dev]
+                 [median] ,
+                 [p25] ,
+                 [p75] ,
+                 [p90] ,
+                 [p95] ,
+                 [p99] ,'
+
+      SET @SQLString = @SQLString + N'
+                 [std_dev] ,
+                 [coeff_variation]
           FROM #table_column_profile;'
   
       IF @SQLString IS NULL 

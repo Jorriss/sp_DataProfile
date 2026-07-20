@@ -146,7 +146,13 @@ INSERT INTO dbo.Stats (val) VALUES (1),(1),(3),(5),(5);
      max_value = '5'
      mean      = '3'       (AVG over INT = 15/5 = 3, exact — no truncation here)
      median    = '3'       (PERCENTILE_DISC(0.5) of 1,1,3,5,5)
-     std_dev   = '2.0000'  (sample STDEV: sum sq dev 16 / (n-1)=4 → var 4 → 2, cast NUMERIC(18,4)) */
+     p25       = '1'       (PERCENTILE_DISC(0.25): smallest value with cum. dist >= 0.25 → rank 2 = 1)
+     p75       = '5'       (PERCENTILE_DISC(0.75) → rank 4 = 5)
+     p90       = '5'       (PERCENTILE_DISC(0.90) → rank 5 = 5)
+     p95       = '5'       (PERCENTILE_DISC(0.95) → rank 5 = 5)
+     p99       = '5'       (PERCENTILE_DISC(0.99) → rank 5 = 5)
+     std_dev   = '2.0000'  (sample STDEV: sum sq dev 16 / (n-1)=4 → var 4 → 2, cast NUMERIC(18,4))
+     coeff_variation = '0.6667'  (std_dev/mean = 2.0/3, float division, cast NUMERIC(18,4)) */
 GO
 
 /*═══════════════════════════════════════════════════════════════════════════
