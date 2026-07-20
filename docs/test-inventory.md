@@ -17,6 +17,8 @@ Roughly **37 tests across 12 files**. Fixtures referenced (`AllTypes`, `Nullable
 6. `test Mode 0 with @ShowForeignKeys=1 emits FK rows for Parent/Child`
 7. `test Mode 0 with @ShowIndexes=1 emits index rows`
 8. `test Mode 0 with both flags off omits FK and index result sets`
+8a. `test Mode 0 with @ShowConstraints=1 emits the unified constraint set for Constrained` — feature #8: PK/default/check/computed in one result set, definitions + trust/persisted flags asserted
+8b. `test Mode 0 with all three @Show* flags on puts constraints at result set 5` — ordering lock: FK=3, index=4, constraints=5
 
 ## Mode1.sql (Column Detail)
 9. `test Mode 1 num_nulls per column against Nullable`

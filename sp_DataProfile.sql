@@ -12,6 +12,7 @@ CREATE PROCEDURE dbo.sp_DataProfile
    @DatabaseName NVARCHAR(128) = NULL ,
    @ShowForeignKeys BIT = 0 ,
    @ShowIndexes BIT = 0 ,
+   @ShowConstraints BIT = 0 ,
    @SampleValue INT = NULL ,
    @SampleType NVARCHAR(50) = 'PERCENT' ,
    @ExactRowCount BIT = 0 ,
@@ -19,7 +20,7 @@ CREATE PROCEDURE dbo.sp_DataProfile
    @CategoricalMaxDistinct INT = 50 ,
    @Verbose BIT = 0
 /*
-sp_DataProfile v0.5 - Jul 19, 2026
+sp_DataProfile v0.6 - Jul 20, 2026
 
 (C) 2026, Jorriss LLC
 Released under the MIT License. See the LICENSE file for details.
@@ -36,7 +37,8 @@ Mode:
 3 = Candidate Key Check - You need a @ColumnList with this
 4 = Column Value Distribution - You need to provide a single column name in @ColumnList. If more than one is provided only the first one is used.
 
-You can use @ShowIndexes = 1 and @ShowForeignKeys = 1 in any mode to see all of the indexes and foreign keys.
+You can use @ShowIndexes = 1, @ShowForeignKeys = 1, and @ShowConstraints = 1 in any mode to see all of
+the indexes, foreign keys, and constraints (primary key, defaults, check constraints, and computed columns).
 @ShowIndexes = 1 also reports size_mb (total reserved size) per index.
 
 @CategoricalMaxDistinct (default 50) tunes the Mode 1 cardinality classification: an eligible column
@@ -47,8 +49,8 @@ Example usage:
 Table Overview
 sp_dataprofile 'Users', 0;
 
-Table Overview with Indexes and FKs
-sp_dataprofile 'Users', 0, @ShowIndexes=1, @ShowForeignKeys=1;
+Table Overview with Indexes, FKs, and Constraints
+sp_dataprofile 'Users', 0, @ShowIndexes=1, @ShowForeignKeys=1, @ShowConstraints=1;
 
 Column Detail
 sp_dataprofile 'Users', 1
@@ -77,6 +79,7 @@ BEGIN
   DECLARE @SQLString NVARCHAR(MAX);
   DECLARE @SQLStringFK NVARCHAR(MAX);
   DECLARE @SQLStringIndexes NVARCHAR(MAX);
+  DECLARE @SQLStringConstraints NVARCHAR(MAX);
   DECLARE @Schema NVARCHAR(100);
   DECLARE @SchemaPosition INT;
   DECLARE @Msg NVARCHAR(4000);
@@ -316,6 +319,16 @@ BEGIN
       [index_columns]        NVARCHAR(max)  NULL ,
       [included_columns]     NVARCHAR(max)  NULL ,
       [filter_definition]    NVARCHAR(max)  NULL
+    );
+
+    CREATE TABLE #table_constraints (
+      [constraint_type]  NVARCHAR(20)  NOT NULL ,  -- PRIMARY KEY / DEFAULT / CHECK / COMPUTED
+      [constraint_name]  NVARCHAR(128) NULL ,       -- NULL for computed columns (no constraint name)
+      [column_name]      NVARCHAR(max) NULL ,       -- bound/target column(s); comma-list for multi-col PK; NULL for table-level CHECK
+      [definition]       NVARCHAR(max) NULL ,       -- DEFAULT expr / CHECK predicate / computed formula; NULL for PK
+      [is_trusted]       BIT           NULL ,       -- CHECK only: NOT is_not_trusted
+      [is_disabled]      BIT           NULL ,       -- CHECK only
+      [is_persisted]     BIT           NULL         -- COMPUTED only
     );
 
     /* Inserting data into #table_column_profile */
@@ -612,6 +625,117 @@ BEGIN
                   [filter_definition]
         FROM      #table_indexes
         ORDER BY  index_id ;'
+    END
+
+    /* Insert constraint data into #table_constraints.
+       One unified set (constraint_type discriminator) unioning the four structural
+       kinds — primary key, default constraints, check constraints, computed columns —
+       from their catalog views. Cheap metadata reads (no base-table scan), same
+       cross-DB QUOTENAME(@DatabaseName) + '.sys....' pattern as the FK/index blocks,
+       all filtered by OBJECT_ID(@FromTableNameClean). No compat gate needed: every
+       catalog view here exists at the 2012 floor. */
+    IF @ShowConstraints = 1
+    BEGIN
+
+      SET @SQLString = N'
+        SELECT      constraint_type = ''PRIMARY KEY'' ,
+                    constraint_name = kc.name ,
+                    column_name =
+                     (SELECT STUFF(
+                       (SELECT '', '' + c.name + CASE WHEN ic.is_descending_key = 1 THEN '' DESC'' ELSE '' ASC'' END
+                        FROM   ' + QUOTENAME(@DatabaseName) + '.sys.index_columns ic
+                        JOIN   ' + QUOTENAME(@DatabaseName) + '.sys.columns       c   ON  ic.object_id = c.object_id
+                                                     AND ic.column_id = c.column_id
+                        WHERE  ic.object_id = kc.parent_object_id
+                        AND    ic.index_id  = kc.unique_index_id
+                        ORDER BY ic.key_ordinal
+                        FOR XML PATH (''''))
+                      , 1, 2, '''') ) ,
+                    definition   = NULL ,
+                    is_trusted   = NULL ,
+                    is_disabled  = NULL ,
+                    is_persisted = NULL
+        FROM        ' + QUOTENAME(@DatabaseName) + '.sys.key_constraints kc
+        WHERE       kc.parent_object_id = OBJECT_ID(''' + @FromTableNameClean + ''')
+        AND         kc.type = ''PK''
+
+        UNION ALL
+
+        SELECT      constraint_type = ''DEFAULT'' ,
+                    constraint_name = dc.name ,
+                    column_name  = c.name ,
+                    definition   = dc.definition ,
+                    is_trusted   = NULL ,
+                    is_disabled  = NULL ,
+                    is_persisted = NULL
+        FROM        ' + QUOTENAME(@DatabaseName) + '.sys.default_constraints dc
+        JOIN        ' + QUOTENAME(@DatabaseName) + '.sys.columns             c   ON  dc.parent_object_id = c.object_id
+                                                AND dc.parent_column_id = c.column_id
+        WHERE       dc.parent_object_id = OBJECT_ID(''' + @FromTableNameClean + ''')
+
+        UNION ALL
+
+        SELECT      constraint_type = ''CHECK'' ,
+                    constraint_name = cc.name ,
+                    column_name  = c.name ,
+                    definition   = cc.definition ,
+                    is_trusted   = CASE WHEN cc.is_not_trusted = 1 THEN 0 ELSE 1 END ,
+                    is_disabled  = cc.is_disabled ,
+                    is_persisted = NULL
+        FROM        ' + QUOTENAME(@DatabaseName) + '.sys.check_constraints cc
+        LEFT JOIN   ' + QUOTENAME(@DatabaseName) + '.sys.columns           c   ON  cc.parent_object_id = c.object_id
+                                                AND cc.parent_column_id = c.column_id
+        WHERE       cc.parent_object_id = OBJECT_ID(''' + @FromTableNameClean + ''')
+
+        UNION ALL
+
+        SELECT      constraint_type = ''COMPUTED'' ,
+                    constraint_name = NULL ,
+                    column_name  = cmp.name ,
+                    definition   = cmp.definition ,
+                    is_trusted   = NULL ,
+                    is_disabled  = NULL ,
+                    is_persisted = cmp.is_persisted
+        FROM        ' + QUOTENAME(@DatabaseName) + '.sys.computed_columns cmp
+        WHERE       cmp.object_id = OBJECT_ID(''' + @FromTableNameClean + ''')'
+
+      IF @Verbose = 1
+      BEGIN
+        RAISERROR (N'Insert constraint data into #table_constraints', 0, 1) WITH NOWAIT;
+        RAISERROR (@SQLString, 0, 1) WITH NOWAIT;
+      END
+
+      IF @SQLString IS NULL
+        RAISERROR('@SQLString is null', 16, 1);
+
+      INSERT INTO #table_constraints (
+        [constraint_type] ,
+        [constraint_name] ,
+        [column_name] ,
+        [definition] ,
+        [is_trusted] ,
+        [is_disabled] ,
+        [is_persisted]
+      )
+      EXEC sp_executesql @SQLString;
+
+      SET @SQLStringConstraints = N'
+        SELECT    [constraint_type] ,
+                  [constraint_name] ,
+                  [column_name] ,
+                  [definition] ,
+                  [is_trusted] ,
+                  [is_disabled] ,
+                  [is_persisted]
+        FROM      #table_constraints
+        ORDER BY  CASE [constraint_type]
+                    WHEN ''PRIMARY KEY'' THEN 1
+                    WHEN ''DEFAULT''     THEN 2
+                    WHEN ''CHECK''       THEN 3
+                    WHEN ''COMPUTED''    THEN 4
+                    ELSE 5 END ,
+                  [constraint_name] ,
+                  [column_name] ;'
     END
 
     IF @Mode = 1 /* Table Detail */
@@ -1168,6 +1292,20 @@ BEGIN
   
         EXEC sp_executesql @SQLStringIndexes;
       END
+
+      IF @ShowConstraints = 1
+      BEGIN
+        IF @Verbose = 1
+        BEGIN
+          RAISERROR (N'Displaying Constraints', 0, 1) WITH NOWAIT;
+          RAISERROR (@SQLStringConstraints, 0, 1) WITH NOWAIT;
+        END
+
+        IF @SQLStringConstraints IS NULL
+          RAISERROR('@SQLStringConstraints is null', 16, 1);
+
+        EXEC sp_executesql @SQLStringConstraints;
+      END
     END /* Mode 0: Table schema output */
     
     /* Table detail output */  
@@ -1256,6 +1394,20 @@ BEGIN
   
         EXEC sp_executesql @SQLStringIndexes;
       END
+
+      IF @ShowConstraints = 1
+      BEGIN
+        IF @Verbose = 1
+        BEGIN
+          RAISERROR (N'Displaying Constraints', 0, 1) WITH NOWAIT;
+          RAISERROR (@SQLStringConstraints, 0, 1) WITH NOWAIT;
+        END
+
+        IF @SQLStringConstraints IS NULL
+          RAISERROR('@SQLStringConstraints is null', 16, 1);
+
+        EXEC sp_executesql @SQLStringConstraints;
+      END
              
     END /* Mode 1: Table detail output */
   
@@ -1338,6 +1490,20 @@ BEGIN
         EXEC sp_executesql @SQLStringIndexes;
       END
 
+      IF @ShowConstraints = 1
+      BEGIN
+        IF @Verbose = 1
+        BEGIN
+          RAISERROR (N'Displaying Constraints', 0, 1) WITH NOWAIT;
+          RAISERROR (@SQLStringConstraints, 0, 1) WITH NOWAIT;
+        END
+
+        IF @SQLStringConstraints IS NULL
+          RAISERROR('@SQLStringConstraints is null', 16, 1);
+
+        EXEC sp_executesql @SQLStringConstraints;
+      END
+
     END /* Mode 2: Column statistics output */
   
     /* Candidate Key Check */
@@ -1398,6 +1564,20 @@ BEGIN
           RAISERROR('@SQLStringIndexes is null', 16, 1);
   
         EXEC sp_executesql @SQLStringIndexes;
+      END
+
+      IF @ShowConstraints = 1
+      BEGIN
+        IF @Verbose = 1
+        BEGIN
+          RAISERROR (N'Displaying Constraints', 0, 1) WITH NOWAIT;
+          RAISERROR (@SQLStringConstraints, 0, 1) WITH NOWAIT;
+        END
+
+        IF @SQLStringConstraints IS NULL
+          RAISERROR('@SQLStringConstraints is null', 16, 1);
+
+        EXEC sp_executesql @SQLStringConstraints;
       END
 
     END /* 3 - Candidate Key Check */
@@ -1463,12 +1643,27 @@ BEGIN
         EXEC sp_executesql @SQLStringIndexes;
       END
 
+      IF @ShowConstraints = 1
+      BEGIN
+        IF @Verbose = 1
+        BEGIN
+          RAISERROR (N'Displaying Constraints', 0, 1) WITH NOWAIT;
+          RAISERROR (@SQLStringConstraints, 0, 1) WITH NOWAIT;
+        END
+
+        IF @SQLStringConstraints IS NULL
+          RAISERROR('@SQLStringConstraints is null', 16, 1);
+
+        EXEC sp_executesql @SQLStringConstraints;
+      END
+
     END /* 4 - Column Value Distribution */
 
     DROP TABLE #table_column_profile;
     DROP TABLE #table_relationship;
-    DROP TABLE #table_indexes
-  
+    DROP TABLE #table_indexes;
+    DROP TABLE #table_constraints;
+
     SET NOCOUNT OFF;
   
   END TRY

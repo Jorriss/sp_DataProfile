@@ -1,8 +1,9 @@
 /*───────────────────────────────────────────────────────────────────────────
-  Mode0.sql  —  Table Overview (metadata + optional FK / index result sets)
+  Mode0.sql  —  Table Overview (metadata + optional FK / index / constraint result sets)
 
   Result-set order per mode: 1 = overview row, 2 = column schema, then FK (if
-  @ShowForeignKeys=1) and index (if @ShowIndexes=1) in that order.
+  @ShowForeignKeys=1), index (if @ShowIndexes=1), and constraints (if
+  @ShowConstraints=1) in that order.
 
   Assertions here favour content (tSQLt.AssertEqualsTable against hand-computed
   expected rows) over COUNT(*) so the values under test — not just row presence —
@@ -274,5 +275,57 @@ BEGIN
                                   @Mode=0, @ShowForeignKeys=1, @ShowIndexes=1, @ResultSetNo=4;
     IF (SELECT COUNT(*) FROM #ix WHERE name = 'PK_Child' AND is_primary_key = 1) <> 1
         EXEC tSQLt.Fail 'PK_Child was not at result set 4 with both flags on';
+END
+GO
+
+CREATE PROCEDURE Mode0.[test_Mode0_ShowConstraints_EmitsConstraintRows]
+AS
+BEGIN
+    /* Feature #8: with only @ShowConstraints=1, the unified constraint set is result set 3.
+       Constrained exercises all four kinds; assert the whole set so the constraint_type
+       discriminator, the PK column concatenation (STUFF/FOR XML), the normalized definition
+       text, and the trust/persisted flags are all verified — not just row presence. */
+    CREATE TABLE #actual (
+        constraint_type NVARCHAR(20), constraint_name NVARCHAR(128), column_name NVARCHAR(MAX),
+        definition NVARCHAR(MAX), is_trusted BIT, is_disabled BIT, is_persisted BIT
+    );
+    EXEC tSQLtTest.CaptureProfile @TargetTable='#actual', @TableName='Constrained',
+                                  @Mode=0, @ShowConstraints=1, @ResultSetNo=3;
+
+    SELECT constraint_type, constraint_name, column_name, definition, is_trusted, is_disabled, is_persisted
+    INTO #got FROM #actual;
+    CREATE TABLE #exp (
+        constraint_type NVARCHAR(20), constraint_name NVARCHAR(128), column_name NVARCHAR(MAX),
+        definition NVARCHAR(MAX), is_trusted BIT, is_disabled BIT, is_persisted BIT
+    );
+    /* Definitions are the engine-normalized forms: DEFAULT ('new') → ('new'),
+       CHECK (qty >= 0) → ([qty]>=(0)), computed (qty * 2) → ([qty]*(2)). The CHECK was added
+       WITH NOCHECK → is_trusted=0; it is enabled → is_disabled=0. Computed col → is_persisted=1. */
+    INSERT INTO #exp VALUES
+      ('PRIMARY KEY', 'PK_Constrained',        'id ASC', NULL,           NULL, NULL, NULL),
+      ('DEFAULT',     'DF_Constrained_status', 'status', '(''new'')',    NULL, NULL, NULL),
+      ('CHECK',       'CK_Constrained_qty',    'qty',    '([qty]>=(0))',    0,    0, NULL),
+      ('COMPUTED',    NULL,                    'qty_x2', '([qty]*(2))',   NULL, NULL,    1);
+    EXEC tSQLt.AssertEqualsTable '#exp', '#got';
+END
+GO
+
+CREATE PROCEDURE Mode0.[test_Mode0_AllFlagsOn_ConstraintsIsSet5]
+AS
+BEGIN
+    /* Locks the documented ordering with all three @Show* flags on: FK=3, index=4, constraints=5.
+       Row content is asserted by the dedicated tests above; here we only prove the constraint set
+       lands at position 5 (after FK and index). Constrained has no FK, so set 3 (FK) is empty but
+       still present; set 4 is its PK index; set 5 is the unified constraint set. */
+    CREATE TABLE #actual (
+        constraint_type NVARCHAR(20), constraint_name NVARCHAR(128), column_name NVARCHAR(MAX),
+        definition NVARCHAR(MAX), is_trusted BIT, is_disabled BIT, is_persisted BIT
+    );
+    EXEC tSQLtTest.CaptureProfile @TargetTable='#actual', @TableName='Constrained',
+                                  @Mode=0, @ShowForeignKeys=1, @ShowIndexes=1, @ShowConstraints=1,
+                                  @ResultSetNo=5;
+    IF (SELECT COUNT(*) FROM #actual WHERE constraint_type = 'PRIMARY KEY'
+                                     AND   constraint_name = 'PK_Constrained') <> 1
+        EXEC tSQLt.Fail 'constraint set (PK_Constrained) was not at result set 5 with all flags on';
 END
 GO

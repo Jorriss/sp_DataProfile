@@ -26,7 +26,7 @@ Ordered roughly by value-for-effort (best first); the **#** column is the canoni
 | 3 | Min/max string *values* ✅ **done** | Per-column | Medium | Low |
 | 9 | Table size / partitions / last-stats-update ✅ **done** | Structural | Medium | Low |
 | 4 | Percentiles + coefficient of variation ✅ **done** | Per-column | Medium | Low–Med |
-| 8 | PK / defaults / check / computed-column defs | Structural | Medium | Low–Med |
+| 8 | PK / defaults / check / computed-column defs ✅ **done** | Structural | Medium | Low–Med |
 | 15 | Test harness (tSQLt / golden output) ✅ **done** | Operational | High | Medium |
 | 6 | Mode value + frequency; top-N / bottom-N | Per-column | High | Medium |
 | 7 | Data-type-mismatch detection | Per-column | Medium | Medium |
@@ -88,8 +88,10 @@ Count rows where a `varchar` column can't `TRY_CONVERT` to its *apparent* type �
 
 ## Schema / structural
 
-### 8. PK / defaults / check constraints / computed-column definitions
+### 8. PK / defaults / check constraints / computed-column definitions ✅ **Delivered**
 **Importance: Medium · Difficulty: Low–Medium**
+
+*Shipped as the new `@ShowConstraints` flag (works in any mode, like `@ShowForeignKeys`/`@ShowIndexes`): one unified result set — a `constraint_type` discriminator (`PRIMARY KEY`/`DEFAULT`/`CHECK`/`COMPUTED`) plus `constraint_name`, `column_name`, `definition`, and `is_trusted`/`is_disabled`/`is_persisted` flags — built by a single cross-DB `UNION ALL` over `sys.key_constraints`, `sys.default_constraints`, `sys.check_constraints`, and `sys.computed_columns` into `#table_constraints`. Rote catalog reads, no base-table scan, no compat gate (all four views exist at the 2012 floor). When enabled alongside the other flags the extra result sets come back FK → index → constraints. Note: unlike the roadmap's original "overview (Mode 0)" framing, it emits in every mode to match the established `@Show*` convention.*
 
 Surface primary key, default constraints, check constraints, and computed-column definitions in the overview (Mode 0) — the proc already does FKs and indexes into `#table_relationship` / `#table_indexes`, so this rounds out the structural picture. Difficulty is Low–Medium: it's the **same catalog-view pattern already in use** (`sys.key_constraints`, `sys.default_constraints`, `sys.check_constraints`, `sys.computed_columns`), each qualified with `QUOTENAME(@DatabaseName)` per the cross-DB convention. Mostly rote query-writing plus a temp table (or extra columns) to hold the output.
 
@@ -145,7 +147,7 @@ Fleshed out in a dedicated design doc: [test-harness-design.md](test-harness-des
 The existing "Suggested priority order" in [analysis.md](analysis.md) ends at *"Feature depth"* and *"Operational"* as broad buckets. This refines that tail into a concrete sequence, front-loading the High-importance / Low-difficulty wins that ride the single-pass scan:
 
 1. ~~**Free riders on the single-pass scan** — #1 blank/zero counts, #2 cardinality classification, #3 min/max string values. High/Medium value, near-zero marginal cost once the Phase 3 rewrite has landed.~~ ✅ **Delivered** — all three ride the Mode 1 single-pass `#agg` scan: soft-null counts (`num_blank`/`num_whitespace`/`num_zero`/`num_negative`) + ratios, a `cardinality` label tuned by `@CategoricalMaxDistinct`, and `min_value`/`max_value` extremes (alphabetical for strings, numeric for number columns).
-2. **Cheap structural adds** — ~~#9 table size/partition DMVs~~ ✅ **Delivered** (Mode 0 `size_mb`/`partition_count`/`data_compression`/`last_stats_update` + per-index `size_mb`), then #8 constraints in overview. Rote catalog queries, no scan.
+2. ~~**Cheap structural adds** — #9 table size/partition DMVs, then #8 constraints in overview. Rote catalog queries, no scan.~~ ✅ **Delivered** — #9 (Mode 0 `size_mb`/`partition_count`/`data_compression`/`last_stats_update` + per-index `size_mb`) and #8 (the `@ShowConstraints` unified PK/default/check/computed result set, emitted in any mode).
 3. ~~**Statistical depth** — #4 percentiles/CV, reusing the median machinery.~~ ✅ **Delivered** — Mode 2 gains `p25`/`p75`/`p90`/`p95`/`p99` (on the median's `PERCENTILE_DISC` scan, same compat-110 gate) and `coeff_variation` (on Batch A's scalar-aggregate scan, so always present).
 4. **The test harness (#15)** — do this before the harder features so the risky ones land safely.
 5. **Per-column heavy hitters** — #6 top-N values (opt-in, scan-per-column), #7 type-mismatch, then #5 pattern profiling (the big differentiator) and #12 PII flagging built on top of it.

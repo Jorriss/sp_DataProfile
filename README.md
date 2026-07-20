@@ -58,7 +58,7 @@ The behavior is driven by `@Mode`:
 | 3 | Candidate Key Check | Given a `@ColumnList`, reports duplicate combinations so you can tell whether the columns form a unique key. — [example](#examples) |
 | 4 | Column Value Distribution | Given a single column, reports each distinct value with its count and percentage of the table. — [example](#examples) |
 
-You can set `@ShowForeignKeys = 1` and/or `@ShowIndexes = 1` in **any** mode to also return the table's foreign keys and indexes.
+You can set `@ShowForeignKeys = 1`, `@ShowIndexes = 1`, and/or `@ShowConstraints = 1` in **any** mode to also return the table's foreign keys, indexes, and constraints (primary key, default constraints, check constraints, and computed columns as a single result set). When more than one is enabled, the extra result sets come back in that order: foreign keys, then indexes, then constraints.
 
 ## What the output looks like
 
@@ -155,6 +155,7 @@ Then one row per distinct value, ordered by `Percentage` descending, with its `C
 | `@DatabaseName` | `NVARCHAR(128)` | current DB | Profile a table in another database on the same instance. |
 | `@ShowForeignKeys` | `BIT` | `0` | Also return incoming and outgoing foreign keys. |
 | `@ShowIndexes` | `BIT` | `0` | Also return indexes, including key/included columns, filter definitions, and `size_mb` (total reserved size per index). |
+| `@ShowConstraints` | `BIT` | `0` | Also return a single result set of the table's constraints: primary key, default constraints, check constraints (with trusted/disabled flags), and computed columns (with their definitions and persisted flag). |
 | `@SampleValue` | `INT` | `NULL` | Sample the table instead of scanning it all. Value between 0 and 100. |
 | `@SampleType` | `NVARCHAR(50)` | `'PERCENT'` | `'PERCENT'` or `'ROWS'`, applied via `TABLESAMPLE`. |
 | `@ExactRowCount` | `BIT` | `0` | Force an exact `COUNT_BIG(*)` row count. Off by default, the row count is read from table metadata (`sys.dm_db_partition_stats`) — near-instant, no scan. Sampling forces this on automatically. |
@@ -170,8 +171,8 @@ Then one row per distinct value, ordered by `Percentage` descending, with its `C
 -- Table overview
 sp_DataProfile 'Users', 0;
 
--- Overview with indexes and foreign keys
-sp_DataProfile 'Users', 0, @ShowIndexes = 1, @ShowForeignKeys = 1;
+-- Overview with indexes, foreign keys, and constraints
+sp_DataProfile 'Users', 0, @ShowIndexes = 1, @ShowForeignKeys = 1, @ShowConstraints = 1;
 
 -- Column detail (unique counts, nulls, min/max length)
 sp_DataProfile 'Users', 1;

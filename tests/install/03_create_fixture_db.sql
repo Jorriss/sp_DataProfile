@@ -219,6 +219,39 @@ ALTER TABLE dbo.Child WITH NOCHECK
 GO
 
 /*═══════════════════════════════════════════════════════════════════════════
+  Constrained — structural constraints for @ShowConstraints (feature #8).
+  Exercises all four unified constraint kinds. Expected #table_constraints rows
+  (ordered PRIMARY KEY, DEFAULT, CHECK, COMPUTED), for the Mode 0 test literals:
+
+    constraint_type  constraint_name         column_name  definition        is_trusted  is_disabled  is_persisted
+    PRIMARY KEY      PK_Constrained          id ASC       NULL              NULL        NULL         NULL
+    DEFAULT          DF_Constrained_status   status       ('new')           NULL        NULL         NULL
+    CHECK            CK_Constrained_qty       qty          ([qty]>=(0))      0           0            NULL
+    COMPUTED         NULL                     qty_x2       ([qty]*(2))       NULL        NULL         1
+
+  The CHECK is added WITH NOCHECK → is_not_trusted=1 → is_trusted=0 (mirrors the
+  FK_Child_Parent untrusted idiom); it is enabled, so is_disabled=0.
+═══════════════════════════════════════════════════════════════════════════*/
+/* PERSISTED computed column requires QUOTED_IDENTIFIER/ANSI_NULLS ON at CREATE
+   time. SSMS defaults these ON, but sqlcmd (the run_all.sql path in the README)
+   defaults QUOTED_IDENTIFIER OFF — set them in this batch so both paths succeed. */
+SET QUOTED_IDENTIFIER ON;
+SET ANSI_NULLS ON;
+IF OBJECT_ID('dbo.Constrained') IS NOT NULL DROP TABLE dbo.Constrained;
+CREATE TABLE dbo.Constrained (
+    id      INT         NOT NULL CONSTRAINT PK_Constrained PRIMARY KEY,
+    status  VARCHAR(10) NOT NULL CONSTRAINT DF_Constrained_status DEFAULT ('new'),
+    qty     INT         NOT NULL,
+    qty_x2  AS (qty * 2) PERSISTED
+);
+INSERT INTO dbo.Constrained (id, status, qty) VALUES
+  (1, 'new', 5),
+  (2, 'done', 0);
+ALTER TABLE dbo.Constrained WITH NOCHECK
+    ADD CONSTRAINT CK_Constrained_qty CHECK (qty >= 0);   -- untrusted (is_not_trusted=1)
+GO
+
+/*═══════════════════════════════════════════════════════════════════════════
   [Odd Names] — QUOTENAME regression: spaced table name, spaced column, and a
   reserved word column. 3 rows.
 ═══════════════════════════════════════════════════════════════════════════*/
